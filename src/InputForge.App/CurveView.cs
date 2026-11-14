@@ -8,6 +8,11 @@ namespace InputForge.App;
 internal sealed class CurveView(MouseSettings settings, Action<int, float> onChanged) : FrameworkElement
 {
     private MouseSettings mouse = settings;
+    public void UpdateSettings(MouseSettings value)
+    {
+        mouse = value;
+        InvalidateVisual();
+    }
     private int point = -1;
     private Rect Plot => new(22,18,Math.Max(1,ActualWidth-44),Math.Max(1,ActualHeight-36));
 
@@ -19,8 +24,12 @@ internal sealed class CurveView(MouseSettings settings, Action<int, float> onCha
         base.OnRender(dc);
         dc.DrawRectangle(Brushes.Transparent,null,new Rect(RenderSize));
         var axes = new Pen(MainWindow.Brush("Border"),1);
-        dc.DrawLine(axes,At(0,1),At(0,0));
-        dc.DrawLine(axes,At(0,0),At(1,0));
+        for (int step = 0; step <= 5; step++)
+        {
+            double mark = step / 5.0;
+            dc.DrawLine(axes, At(mark, 0), At(mark, 1));
+            dc.DrawLine(axes, At(0, mark), At(1, mark));
+        }
         var curve = new StreamGeometry();
         using (var context = curve.Open())
         {

@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Media3D;
 using InputForge.App;
 using InputForge.Core;
 using Xunit;
@@ -24,6 +26,20 @@ public class EliteModelTests
             Assert.True(part.Material.IsFrozen);
         });
         Assert.Equal(109702, model.Parts.Sum(part => part.Mesh.TriangleIndices.Count / 3));
+        var brushes = model.Parts.SelectMany(part => ((MaterialGroup)part.Material).Children.Select(material => material switch
+            {
+                DiffuseMaterial diffuse => diffuse.Brush,
+                SpecularMaterial specular => specular.Brush,
+                EmissiveMaterial emissive => emissive.Brush,
+                _ => null
+            })).OfType<ImageBrush>().ToArray();
+        Assert.NotEmpty(brushes);
+        Assert.All(brushes, brush =>
+        {
+            Assert.Equal(BrushMappingMode.Absolute, brush.ViewportUnits);
+            Assert.Equal(new Rect(0, 0, 1, 1), brush.Viewport);
+            Assert.Equal(TileMode.Tile, brush.TileMode);
+        });
         var controls = model.Parts.Select(part => part.Control).ToHashSet();
         Assert.All(new[] { Control.A, Control.B, Control.X, Control.Y, Control.LeftClick, Control.RightClick,
             Control.LeftTrigger, Control.RightTrigger, Control.LeftBumper, Control.RightBumper,

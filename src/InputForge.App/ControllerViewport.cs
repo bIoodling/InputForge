@@ -147,7 +147,8 @@ internal sealed class ControllerViewport : Grid
                 rotation = new Quaternion(new Vector3D(-motion.Stick.Y, motion.Stick.X, 0), 15 * motion.Stick.Length());
             else if (id is Control.LeftTrigger or Control.RightTrigger && motion.Travel > 0)
                 rotation = new Quaternion(new Vector3D(1, 0, 0), motion.Travel * 14);
-            double depth = id is Control.LeftTrigger or Control.RightTrigger ? 0 : -motion.Travel * .024;
+            double depth = id is Control.LeftTrigger or Control.RightTrigger or Control.Up or Control.Down or Control.Left or Control.Right
+                ? 0 : -motion.Travel * .024;
             foreach (var part in group)
             {
                 var material = motion.Active ? part.Active : selection == id || selectedStick ? part.Selected : part.Idle;

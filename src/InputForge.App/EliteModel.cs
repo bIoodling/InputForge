@@ -78,10 +78,10 @@ internal sealed record EliteModel(IReadOnlyList<ElitePart> Parts)
         }
         float Component(int offset) => BinaryPrimitives.ReadSingleLittleEndian(data.AsSpan(offset, 4));
 
-        var textures = new Dictionary<int, ImageBrush>();
-        ImageBrush Texture(int id)
+        var textures = new Dictionary<int, BitmapSource>();
+        BitmapSource Texture(int id)
         {
-            if (textures.TryGetValue(id, out var brush)) return brush;
+            if (textures.TryGetValue(id, out var cached)) return cached;
             int image = scene.GetProperty("textures")[id].GetProperty("source").GetInt32();
             var view = views[scene.GetProperty("images")[image].GetProperty("bufferView").GetInt32()];
             using var bytes = new MemoryStream(data, Number(view, "byteOffset"), Number(view, "byteLength"), false);
@@ -92,17 +92,15 @@ internal sealed record EliteModel(IReadOnlyList<ElitePart> Parts)
             bitmap.DecodePixelWidth = 2048;
             bitmap.EndInit();
             bitmap.Freeze();
-            brush = new ImageBrush(bitmap);
-            brush.Freeze();
-            textures.Add(id, brush);
-            return brush;
+            textures.Add(id, bitmap);
+            return bitmap;
         }
         var materials = scene.GetProperty("materials").EnumerateArray().Select(material =>
         {
             var pbr = material.GetProperty("pbrMetallicRoughness");
             Brush diffuse;
             if (pbr.TryGetProperty("baseColorTexture", out var baseColor))
-                diffuse = Texture(Number(baseColor, "index"));
+                diffuse = AtlasBrush(Texture(Number(baseColor, "index")));
             else
             {
                 var rgba = pbr.GetProperty("baseColorFactor").EnumerateArray().Select(v => v.GetSingle()).ToArray();
@@ -111,9 +109,13 @@ internal sealed record EliteModel(IReadOnlyList<ElitePart> Parts)
 
             var group = new MaterialGroup();
             group.Children.Add(new DiffuseMaterial(diffuse));
-            group.Children.Add(new SpecularMaterial(new SolidColorBrush(Color.FromRgb(27, 27, 27)), 22));
+            if (pbr.TryGetProperty("metallicRoughnessTexture", out var packed))
+                group.Children.Add(new SpecularMaterial(AtlasBrush(SpecularAtlas(Texture(Number(packed, "index")),
+                    pbr.TryGetProperty("metallicFactor", out var metallic) ? metallic.GetDouble() : 1)), 26));
+            else
+                group.Children.Add(new SpecularMaterial(new SolidColorBrush(Color.FromRgb(29, 29, 29)), 32));
             if (material.TryGetProperty("emissiveTexture", out var emission))
-                group.Children.Add(new EmissiveMaterial(Texture(Number(emission, "index"))));
+                group.Children.Add(new EmissiveMaterial(AtlasBrush(Texture(Number(emission, "index")))));
             group.Freeze();
             return group;
         }).ToArray();
@@ -162,13 +164,17 @@ internal sealed record EliteModel(IReadOnlyList<ElitePart> Parts)
             var vertices = new Point3DCollection(positions.Count);
             var vectors = new Vector3DCollection(positions.Count);
             var texCoords = new PointCollection(positions.Count);
+            world.Invert();
+            var normalMatrix = new Matrix3D(world.M11, world.M21, world.M31, 0,
+                world.M12, world.M22, world.M32, 0, world.M13, world.M23, world.M33, 0, 0, 0, 0, 1);
+            world.Invert();
             for (int i = 0; i < source.Length; i++)
             {
                 int p = positions.Start + i * positions.Stride, n = normals.Start + i * normals.Stride,
                     t = uv.Start + i * uv.Stride;
                 source[i] = world.Transform(new Point3D(Component(p), Component(p + 4), Component(p + 8)));
                 vertices.Add(fit.Transform(source[i]));
-                var normal = world.Transform(new Vector3D(Component(n), Component(n + 4), Component(n + 8)));
+                var normal = normalMatrix.Transform(new Vector3D(Component(n), Component(n + 4), Component(n + 8)));
                 normal.Normalize();
                 vectors.Add(normal);
                 texCoords.Add(new Point(Component(t), Component(t + 4)));
@@ -207,6 +213,40 @@ internal sealed record EliteModel(IReadOnlyList<ElitePart> Parts)
         if (parts.Count == 0) throw new InvalidDataException("No model geometry.");
         // Draw the translucent button caps after the opaque scene.
         return new(parts.OrderBy(p => p.DoubleSided).ToArray());
+    }
+
+    internal static ImageBrush AtlasBrush(BitmapSource bitmap)
+    {
+        var brush = new ImageBrush(bitmap)
+        {
+            ViewportUnits = BrushMappingMode.Absolute,
+            Viewport = new Rect(0, 0, 1, 1),
+            Viewbox = new Rect(0, 0, 1, 1),
+            Stretch = Stretch.Fill,
+            TileMode = TileMode.Tile
+        };
+        brush.Freeze();
+        return brush;
+    }
+
+    private static BitmapSource SpecularAtlas(BitmapSource source, double metalFactor)
+    {
+        // glTF's packed G/B channels are linear material data.
+        var bitmap = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
+        int stride = bitmap.PixelWidth * 4;
+        var pixels = new byte[stride * bitmap.PixelHeight];
+        bitmap.CopyPixels(pixels, stride, 0);
+        for (int i = 0; i < pixels.Length; i += 4)
+        {
+            double metal = pixels[i] * metalFactor / 255;
+            double smooth = 1 - pixels[i + 1] / 255.0;
+            byte intensity = (byte)Math.Round(12 + 105 * (.22 + .78 * metal) * smooth);
+            pixels[i] = pixels[i + 1] = pixels[i + 2] = intensity;
+            pixels[i + 3] = 255;
+        }
+        var result = BitmapSource.Create(bitmap.PixelWidth, bitmap.PixelHeight, 96, 96, PixelFormats.Bgra32, null, pixels, stride);
+        result.Freeze();
+        return result;
     }
 
     private static Point3D Pivot(Control? control) => control switch
