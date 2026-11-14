@@ -286,8 +286,11 @@ internal sealed class ControllerViewport : Grid
             {
                 if (control is Control.Up or Control.Down or Control.Left or Control.Right)
                 {
-                    Point3D point = hit.PointHit;
-                    control = DirectionalPad.Direction(point.X / .265 + 2.01, (point.Y / .265 - .95 + 1.04) / .964);
+                    var vertices = hit.MeshHit.Positions;
+                    Point3D a = vertices[hit.VertexIndex1], b = vertices[hit.VertexIndex2], c = vertices[hit.VertexIndex3];
+                    double x = a.X * hit.VertexWeight1 + b.X * hit.VertexWeight2 + c.X * hit.VertexWeight3;
+                    double y = a.Y * hit.VertexWeight1 + b.Y * hit.VertexWeight2 + c.Y * hit.VertexWeight3;
+                    control = DirectionalPad.Direction(x / .265 + 2.01, (y / .265 - .95 + 1.04) / .964);
                 }
                 ControlSelected?.Invoke(control);
             }

@@ -16,7 +16,7 @@ public sealed record MouseSettings(float Horizontal = 1, float Vertical = 1, flo
     float Acceleration = 0, Smoothing Filter = Smoothing.Exponential,
     ResponseCurve Curve = ResponseCurve.Linear, float Point1 = .25f, float Point2 = .75f,
     float Input1 = 1f / 3, float Input2 = 2f / 3, float Saturation = 1, float AntiDeadzone = 0,
-    bool InterpolatedKnots = false);
+    bool InterpolatedKnots = false, float MaxOutput = 1);
 
 public readonly record struct ControllerState(uint Buttons, Vector2 Left, Vector2 Right, float LT, float RT)
 {
@@ -94,7 +94,7 @@ public sealed class Mapper
             float normalized = Math.Clamp((accelerated - mouse.Deadzone) / (mouse.Saturation - mouse.Deadzone), 0, 1);
             float output = EvaluateCurve(normalized, mouse);
             if (output > 0) output = mouse.AntiDeadzone + (1 - mouse.AntiDeadzone) * output;
-            target = scaled / magnitude * output;
+            target = scaled / magnitude * (output * mouse.MaxOutput);
         }
         MouseTarget = target;
 

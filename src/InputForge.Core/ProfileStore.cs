@@ -17,6 +17,7 @@ public sealed record Preferences(string Application, MouseSettings Mouse, Dictio
         Mouse.Input1 >= CurveKnots.Gap && Mouse.Input2 <= 1 - CurveKnots.Gap &&
         Mouse.Input2 - Mouse.Input1 >= CurveKnots.Gap - .000001f &&
         Mouse.Saturation is >= .5f and <= 1 && Mouse.AntiDeadzone is >= 0 and <= .35f &&
+        Mouse.MaxOutput is >= .1f and <= 1 &&
         Enum.IsDefined(Mouse.Curve) && Enum.IsDefined(Mouse.Filter);
 }
 

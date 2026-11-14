@@ -122,7 +122,7 @@ internal sealed record EliteModel(IReadOnlyList<ElitePart> Parts)
             if (pbr.TryGetProperty("metallicRoughnessTexture", out var packed))
                 group.Children.Add(new SpecularMaterial(AtlasBrush(SpecularAtlas(Texture(Number(packed, "index")),
                     pbr.TryGetProperty("metallicFactor", out var metallic) ? metallic.GetDouble() : 1,
-                    graphite ? .55 : .8)), 32));
+                    graphite ? .32 : .8)), graphite ? 38 : 32));
             else
                 group.Children.Add(new SpecularMaterial(new SolidColorBrush(Color.FromRgb(29, 29, 29)), 32));
             if (material.TryGetProperty("emissiveTexture", out var emission))
@@ -222,7 +222,8 @@ internal sealed record EliteModel(IReadOnlyList<ElitePart> Parts)
                 };
                 mesh.Freeze();
                 var mapped = control >= 0 ? (Control?)control : null;
-                bool graphite = meshIndex is 0 or 8 or 9 or 10;
+                // Apply only to hardware surfaces, preserving the guide and face lettering.
+                bool graphite = meshIndex is 0 or 7 or 8 or 9 or 10;
                 parts.Add(new(mesh, Finish(materialIndex, graphite), mapped, fit.Transform(Pivot(mapped)), materialIndex == 1));
             }
         }

@@ -712,7 +712,7 @@ public partial class MainWindow : Window
             differences.Text = $"Horizontal   {a.Horizontal:F2} → {b.Horizontal:F2}\nVertical   {a.Vertical:F2} → {b.Vertical:F2}\n" +
                 $"Deadzone   {a.Deadzone:P0} → {b.Deadzone:P0}\nSmoothing   {a.Filter} → {b.Filter}\n" +
                 $"Acceleration   {a.Acceleration:F2} → {b.Acceleration:F2}\nCurve   {a.Curve} → {b.Curve}\n" +
-                $"Full output reached at   {a.Saturation:P0} → {b.Saturation:P0}\nMaximum stick magnitude   100% → 100%";
+                $"Saturation threshold   {a.Saturation:P0} → {b.Saturation:P0}\nMaximum mouse output   {a.MaxOutput:P0} → {b.MaxOutput:P0}";
         }
         left.SelectionChanged += (_, _) => Compare();
         right.SelectionChanged += (_, _) => Compare();
@@ -729,15 +729,18 @@ public partial class MainWindow : Window
         DockPanel.SetDock(tools, Dock.Top);
         frame.Children.Add(tools);
         var current = preferences.Mouse;
-        var editor = Surface(Column(
+        var editor = Surface(Column(Section("Sensitivity"),
             SliderFor("Horizontal sensitivity", .1, 4, current.Horizontal, value => ChangeMouse(preferences.Mouse with { Horizontal = value })),
             SliderFor("Vertical sensitivity", .1, 4, current.Vertical, value => ChangeMouse(preferences.Mouse with { Vertical = value })),
-            Text("Smoothing", 14), Combo("Smoothing", Enum.GetValues<Smoothing>(), current.Filter, value =>
+            Section("Motion shaping"), Combo("Smoothing", Enum.GetValues<Smoothing>(), current.Filter, value =>
                 ChangeMouse(preferences.Mouse with { Filter = value })),
-            SliderFor("Deadzone", 0, .35, current.Deadzone, value => ChangeMouse(preferences.Mouse with { Deadzone = value })),
             SliderFor("Acceleration", 0, 3, current.Acceleration, value => ChangeMouse(preferences.Mouse with { Acceleration = value })),
-            SliderFor("Saturation", .5, 1, current.Saturation, value => ChangeMouse(preferences.Mouse with { Saturation = value })),
-            SliderFor("Anti-deadzone", 0, .35, current.AntiDeadzone, value => ChangeMouse(preferences.Mouse with { AntiDeadzone = value }))),24);
+            Section("Deadzones"),
+            SliderFor("Input deadzone", 0, .35, current.Deadzone, value => ChangeMouse(preferences.Mouse with { Deadzone = value })),
+            SliderFor("Anti-deadzone", 0, .35, current.AntiDeadzone, value => ChangeMouse(preferences.Mouse with { AntiDeadzone = value })),
+            Section("Output limits"),
+            SliderFor("Saturation threshold", .5, 1, current.Saturation, value => ChangeMouse(preferences.Mouse with { Saturation = value })),
+            SliderFor("Maximum mouse output", .1, 1, current.MaxOutput, value => ChangeMouse(preferences.Mouse with { MaxOutput = value }))),24);
         var input = new TextBox { Width = 65 };
         var outputField = new TextBox { Width = 65 };
         System.Windows.Automation.AutomationProperties.SetName(input, "Point input coordinate");

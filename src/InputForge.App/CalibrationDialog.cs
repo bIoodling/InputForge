@@ -42,8 +42,10 @@ public partial class MainWindow
             candidate = value;
             runtime.Configure(Config() with { Test = true, Editing = preferences with { Mouse = candidate } });
         }
-        var back = ButtonFor("Back", () => { step--; Render(); });
-        var next = ButtonFor("Next", () => { step++; Render(); });
+        var back = new Button { Content = "Back" };
+        var next = new Button { Content = "Next" };
+        back.Click += (_, _) => { step--; Render(); };
+        next.Click += (_, _) => { step++; Render(); };
         void Render()
         {
             title.Text = $"{step + 1} / {steps.Length}  ·  {steps[step]}";
