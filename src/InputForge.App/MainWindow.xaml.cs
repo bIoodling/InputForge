@@ -247,7 +247,7 @@ public partial class MainWindow : Window
         rebind = ButtonFor("Rebind", BeginRebind);
         var reset = ButtonFor("Reset", () => SetBinding(DefaultBindings.Create()[selected]));
         var clear = ButtonFor("Clear", () => SetBinding(0));
-        groupPicker = Combo("Binding group", Enum.GetValues<BindingGroup>(), GroupFor(selected), group =>
+        groupPicker = Combo("Binding group", Enum.GetValues<ControlCategory>(), GroupFor(selected), group =>
         {
             var choices = ControlsIn(group);
             controlPicker!.ItemsSource = choices;
@@ -283,17 +283,17 @@ public partial class MainWindow : Window
         model.ShowState(runtime.Read().State, selected);
     }
 
-    private enum BindingGroup { Face, Shoulders, Directional, Sticks }
+    private enum ControlCategory { Face, Shoulders, Directional, Sticks }
 
-    private static BindingGroup GroupFor(Control id) => id switch
+    private static ControlCategory GroupFor(Control id) => id switch
     {
-        Control.A or Control.B or Control.X or Control.Y or Control.View or Control.Menu => BindingGroup.Face,
-        Control.LeftBumper or Control.RightBumper or Control.LeftTrigger or Control.RightTrigger => BindingGroup.Shoulders,
-        Control.Up or Control.Down or Control.Left or Control.Right => BindingGroup.Directional,
-        _ => BindingGroup.Sticks
+        Control.A or Control.B or Control.X or Control.Y or Control.View or Control.Menu => ControlCategory.Face,
+        Control.LeftBumper or Control.RightBumper or Control.LeftTrigger or Control.RightTrigger => ControlCategory.Shoulders,
+        Control.Up or Control.Down or Control.Left or Control.Right => ControlCategory.Directional,
+        _ => ControlCategory.Sticks
     };
 
-    private static Control[] ControlsIn(BindingGroup group) => Enum.GetValues<Control>().Where(id => GroupFor(id) == group).ToArray();
+    private static Control[] ControlsIn(ControlCategory group) => Enum.GetValues<Control>().Where(id => GroupFor(id) == group).ToArray();
 
     private StackPanel? mouseChoices;
 

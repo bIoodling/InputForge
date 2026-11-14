@@ -21,7 +21,7 @@ dotnet test InputForge.slnx -c Release --no-build
   Double-click the background to reset the view. Test inputs on Dashboard or Controller
   to visualise real mappings without a virtual device.
 - On Mouse, use the Sensitivity, Filtering and Response Curve tabs.
-- In Testing Lab, start a local test to use real keyboard and mouse input without creating a virtual device.
+- In Testing Lab, choose **Test inputs** to use real keyboard and mouse input without creating a virtual device.
 - For virtual Xbox 360 output, separately install [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0).
   Select the allowed executable under Profiles, enable mapping, and focus that executable.
   ViGEmBus is a retired driver. InputForge neither distributes nor installs it.
