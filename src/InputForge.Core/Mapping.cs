@@ -32,16 +32,18 @@ public readonly record struct ControllerState(uint Buttons, Vector2 Left, Vector
 
 public static class DefaultBindings
 {
+    public const int LeftShift = 0xA0;
+    public const int RightShift = 0xA1;
     public const int MouseLeft = 256;
     public const int MouseRight = 257;
     public static Dictionary<Control, int> Create() => new()
     {
-        [Control.A] = 0x20, [Control.B] = 'C', [Control.X] = 'R', [Control.Y] = 'F',
+        [Control.A] = 0x20, [Control.B] = LeftShift, [Control.X] = 'R', [Control.Y] = 'F',
         [Control.LeftBumper] = 'Q', [Control.RightBumper] = 'E',
         [Control.LeftTrigger] = MouseRight, [Control.RightTrigger] = MouseLeft,
         [Control.View] = 'N', [Control.Menu] = 'M',
         [Control.Up] = '1', [Control.Down] = '2', [Control.Left] = '3', [Control.Right] = '4',
-        [Control.LeftClick] = 0x10, [Control.RightClick] = 'V',
+        [Control.LeftClick] = 'C', [Control.RightClick] = 'V',
         [Control.LeftUp] = 'W', [Control.LeftDown] = 'S', [Control.LeftLeft] = 'A', [Control.LeftRight] = 'D',
         [Control.RightUp] = 0x26, [Control.RightDown] = 0x28,
         [Control.RightLeft] = 0x25, [Control.RightRight] = 0x27

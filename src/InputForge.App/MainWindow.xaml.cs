@@ -18,7 +18,6 @@ namespace InputForge.App;
 
 public partial class MainWindow : Window
 {
-    private sealed record Preferences(string Application, MouseSettings Mouse, Dictionary<Control, int> Bindings);
     private static readonly string SettingsPath = System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "InputForge", "preferences.json");
     private readonly ControllerViewport model = new();
@@ -27,14 +26,19 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, Button> nav = new();
     private Preferences preferences;
     private bool enabled, testing;
-    private Control selected = Control.A;
+    private readonly BindingSelection bindingSelection = new();
+    private Control Selected => bindingSelection.Current;
     private bool rebinding;
     private TextBlock? applicationStatus, signals, binding, selection, notice;
     private Button? rebind;
     private Button? localTest;
     private TextBlock? localTestLabel;
-    private ComboBox? controlPicker;
-    private ComboBox? groupPicker;
+    private ListBox? bindingList;
+    private TextBlock? selectedBadge, controllerStatus, previewStatus;
+    private readonly Dictionary<Control, (ListBoxItem Item, TextBlock Value)> bindingRows = new();
+    private bool viewerExpanded;
+    private WindowState previousWindowState;
+    private WindowStyle previousWindowStyle;
     private string page = "Dashboard";
     private string mouseTab = "Sensitivity";
     private RuntimeStatus? last;
@@ -56,11 +60,8 @@ public partial class MainWindow : Window
             nav.Add(name, button);
             Navigation.Children.Add(button);
         }
-        model.ControlSelected += id =>
-        {
-            if (page == "Dashboard") { selected = id; Navigate("Controller"); }
-            else if (page == "Controller") SelectControl(id);
-        };
+        bindingSelection.Changed += PresentSelection;
+        model.ControlSelected += bindingSelection.Select;
         Toggle.Click += (_, _) => { enabled = !enabled; Apply(); };
         PreviewKeyDown += HandleKey;
         Deactivated += (_, _) => { if (rebinding) { CancelRebind(); Apply(); } };
@@ -72,6 +73,7 @@ public partial class MainWindow : Window
             else { model.ResumeOrbit(); RefreshOutput(); refresh.Start(); }
         };
         Navigate("Dashboard");
+        SizeChanged += (_, _) => Navigation.Width = ActualWidth < 1030 ? 126 : 195;
         refresh.Start();
     }
 
@@ -81,52 +83,39 @@ public partial class MainWindow : Window
         {
             if (File.Exists(SettingsPath))
             {
-                var stored = JsonSerializer.Deserialize<Preferences>(File.ReadAllText(SettingsPath));
-                if (stored is not null && stored.Application is not null && stored.Mouse is not null &&
-                    stored.Bindings is not null && stored.Bindings.Count == DefaultBindings.Create().Count &&
-                    stored.Bindings.All(pair => Enum.IsDefined(pair.Key) && pair.Value is >= 0 and < 261) &&
-                    ValidMouse(stored.Mouse))
-                    return stored;
-                persistenceError = "Saved preferences were invalid. Defaults are loaded.";
+                return ProfileStore.Read(SettingsPath);
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
             persistenceError = "Preferences could not be read. Defaults are loaded.";
         }
-        return new("", new MouseSettings(), DefaultBindings.Create());
+        return Preferences.Create();
     }
-
-    private static bool ValidMouse(MouseSettings settings) =>
-        settings.Horizontal is >= .1f and <= 4 && settings.Vertical is >= .1f and <= 4 &&
-        settings.Deadzone is >= 0 and <= .35f && settings.Acceleration is >= 0 and <= 3 &&
-        settings.Point1 is >= 0 and <= 1 && settings.Point2 is >= 0 and <= 1 &&
-        Enum.IsDefined(settings.Curve) && Enum.IsDefined(settings.Filter);
 
     private void SavePreferences()
     {
         try
         {
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
-            File.WriteAllText(SettingsPath + ".tmp", JsonSerializer.Serialize(preferences));
-            File.Move(SettingsPath + ".tmp", SettingsPath, true);
+            ProfileStore.Write(SettingsPath, preferences);
             persistenceError = null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             persistenceError = "InputForge could not save preferences.";
-            if (notice is not null) notice.Text = persistenceError;
+            if (notice is not null) { notice.Text = persistenceError; notice.Visibility = Visibility.Visible; }
         }
     }
 
     private RuntimeConfig Config() => new(!rebinding && enabled, !rebinding && testing, preferences.Application, preferences.Bindings, preferences.Mouse);
     private void Apply()
     {
+        model.TestingInput = testing || rebinding;
         runtime.Configure(Config());
         Toggle.Content = enabled ? "Mapping on" : "Mapping off";
         Toggle.Background = Brush(enabled ? "Active" : "Elevated");
         if (localTest is not null) localTest.Content = testing ? "Stop input test" : "Test inputs";
-        if (localTestLabel is not null) localTestLabel.Text = testing ? "Local test" : "";
+        if (localTestLabel is not null) localTestLabel.Text = testing ? "Testing Mode" : "";
         ProfileLabel.Text = string.IsNullOrEmpty(preferences.Application)
             ? "Default profile" : System.IO.Path.GetFileNameWithoutExtension(preferences.Application);
         last = null;
@@ -140,12 +129,21 @@ public partial class MainWindow : Window
         ConnectionLabel.Text = current.Connection;
         ConnectionDot.Fill = Brush(current.Connection == "Connected" ? "Accent" : "Muted");
         if (applicationStatus is not null) applicationStatus.Text = current.Application;
+        if (controllerStatus is not null) controllerStatus.Text = current.Connection;
+        if (previewStatus is not null)
+        {
+            string inputs = string.Join(" · ", Enum.GetValues<Control>().Where(id => (int)id <= (int)Control.RightClick && current.State.IsPressed(id)).Select(Glyph));
+            if (current.State.Left.LengthSquared() > .0025f) inputs += (inputs.Length == 0 ? "" : " · ") + "LS";
+            if (current.State.Right.LengthSquared() > .0025f) inputs += (inputs.Length == 0 ? "" : " · ") + "RS";
+            previewStatus.Text = inputs.Length == 0 ? "Neutral" : inputs;
+            previewStatus.ToolTip = previewStatus.Text;
+        }
         if (signals is not null)
             signals.Text = $"Left    {current.State.Left.X,6:F2}  {current.State.Left.Y,6:F2}\n" +
                 $"Right   {current.State.Right.X,6:F2}  {current.State.Right.Y,6:F2}\n" +
                 $"LT      {current.State.LT:F2}    RT    {current.State.RT:F2}\n" +
                 $"Reports sent   {current.ReportsPerSecond}/s";
-        if (model.IsVisible) model.ShowState(current.State, page == "Controller" ? selected : null);
+        if (model.IsVisible) model.ShowState(current.State, page is "Dashboard" or "Controller" ? Selected : null);
     }
 
     private void Navigate(string name)
@@ -155,8 +153,9 @@ public partial class MainWindow : Window
         if (model.Parent is Panel oldParent) oldParent.Children.Remove(model);
         page = name;
         applicationStatus = signals = binding = selection = notice = null;
-        controlPicker = null;
-        groupPicker = null;
+        bindingList = null;
+        bindingRows.Clear();
+        selectedBadge = controllerStatus = previewStatus = null;
         rebind = null;
         mouseChoices = null;
         localTest = null;
@@ -199,101 +198,223 @@ public partial class MainWindow : Window
     private Border Scene()
     {
         var scene = new Grid();
+        scene.RowDefinitions.Add(new RowDefinition());
+        scene.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         scene.Children.Add(model);
-        var bottom = new DockPanel { VerticalAlignment = VerticalAlignment.Bottom };
-        var views = Row(ButtonFor("Rear view", model.Rear), ButtonFor("Reset view", model.Reset));
-        views.HorizontalAlignment = HorizontalAlignment.Right;
-        DockPanel.SetDock(views, Dock.Right);
-        bottom.Children.Add(views);
-        localTest = ButtonFor("Test inputs", () => { testing = !testing; Apply(); });
-        localTestLabel = Text("", 11, "Muted");
-        bottom.Children.Add(Row(localTest, localTestLabel));
-        scene.Children.Add(bottom);
-        return Surface(scene, 8);
-    }
-
-    private DockPanel Dashboard()
-    {
-        var frame = Frame("Dashboard");
-        var details = new Grid { Margin = new Thickness(0,14,0,0) };
-        details.ColumnDefinitions.Add(new ColumnDefinition());
-        details.ColumnDefinitions.Add(new ColumnDefinition());
-        details.ColumnDefinitions.Add(new ColumnDefinition());
-        var app = Column(Text("Active application", 11, "Muted"), applicationStatus = Text("Inactive"));
-        applicationStatus.TextTrimming = TextTrimming.CharacterEllipsis;
-        applicationStatus.TextWrapping = TextWrapping.NoWrap;
-        details.Children.Add(app);
-        var horizontal = SliderFor("Horizontal", .1, 4, preferences.Mouse.Horizontal, x => ChangeMouse(preferences.Mouse with { Horizontal = x }));
-        var vertical = SliderFor("Vertical", .1, 4, preferences.Mouse.Vertical, x => ChangeMouse(preferences.Mouse with { Vertical = x }));
-        Grid.SetColumn(horizontal,1); Grid.SetColumn(vertical,2);
-        horizontal.Margin = vertical.Margin = new Thickness(12,0,0,0);
-        details.Children.Add(horizontal);
-        details.Children.Add(vertical);
-        DockPanel.SetDock(details,Dock.Bottom);
-        frame.Children.Add(details);
-        frame.Children.Add(Scene());
-        return frame;
-    }
-
-    private DockPanel ControllerPage()
-    {
-        var frame = Frame("Controller");
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition());
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(232) });
-        grid.Children.Add(Scene());
-        binding = Text("", 14);
-        selection = Text("", 15);
-        rebind = ButtonFor("Rebind", BeginRebind);
-        var reset = ButtonFor("Reset", () => SetBinding(DefaultBindings.Create()[selected]));
-        var clear = ButtonFor("Clear", () => SetBinding(0));
-        groupPicker = Combo("Binding group", Enum.GetValues<ControlCategory>(), GroupFor(selected), group =>
+        var views = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Center };
+        foreach (var button in new[] { ButtonFor("Front view", model.Front), ButtonFor("Rear view", model.Rear),
+            ButtonFor("Reset view", model.Reset), ButtonFor(viewerExpanded ? "Exit fullscreen" : "Fullscreen", ToggleFullscreen),
+            localTest = ButtonFor("Test inputs", () => { testing = !testing; Apply(); }) })
         {
-            var choices = ControlsIn(group);
-            controlPicker!.ItemsSource = choices;
-            SelectControl(choices.Contains(selected) ? selected : choices[0]);
-        });
-        controlPicker = Combo("Controller control", ControlsIn(GroupFor(selected)), selected, SelectControl);
-        var controls = Column(Text("Bindings", 11, "Muted"), groupPicker, controlPicker, selection, binding,
-            Row(rebind, clear, reset),
-            mouseChoices = Column(
-                Row(ButtonFor("Left mouse", () => BindMouse(256)), ButtonFor("Right mouse", () => BindMouse(257))),
-                Row(ButtonFor("Middle", () => BindMouse(258)), ButtonFor("Mouse 4", () => BindMouse(259)), ButtonFor("Mouse 5", () => BindMouse(260)))),
-            notice = Text("", 11, "Muted"));
+            button.Margin = new Thickness(3, 4, 3, 0);
+            views.Children.Add(button);
+        }
+        localTestLabel = Text("", 11, "Muted");
+        localTestLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        var bottom = new StackPanel();
+        bottom.Children.Add(views);
+        bottom.Children.Add(localTestLabel);
+        Grid.SetRow(bottom, 1);
+        scene.Children.Add(bottom);
+        return new Border { Child = scene };
+    }
+
+    private void ToggleFullscreen()
+    {
+        viewerExpanded = !viewerExpanded;
+        if (viewerExpanded)
+        {
+            previousWindowStyle = WindowStyle;
+            previousWindowState = WindowState;
+            WindowStyle = WindowStyle.None;
+            WindowState = WindowState.Maximized;
+            Header.Visibility = SidebarPanel.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            WindowState = previousWindowState;
+            WindowStyle = previousWindowStyle;
+            Header.Visibility = SidebarPanel.Visibility = Visibility.Visible;
+        }
+        Navigate(page);
+    }
+
+    private GridLength inspectorWidth = new(455);
+
+    private DockPanel Dashboard() => ControllerWorkspace("Dashboard");
+    private DockPanel ControllerPage() => ControllerWorkspace("Controller");
+
+    private DockPanel ControllerWorkspace(string title)
+    {
+        if (viewerExpanded)
+        {
+            var frame = new DockPanel();
+            frame.Children.Add(Scene());
+            return frame;
+        }
+        var workspace = new DockPanel();
+
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { MinWidth = 260 });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        var inspector = new ColumnDefinition { Width = inspectorWidth, MinWidth = 280 };
+        grid.ColumnDefinitions.Add(inspector);
+        grid.SizeChanged += (_, _) =>
+        {
+            inspector.MaxWidth = Math.Max(280, grid.ActualWidth - 272);
+            inspector.Width = inspectorWidth;
+        };
+
+        var viewer = Frame(title);
+        var status = new Grid();
+        for (int i = 0; i < 3; i++)
+            status.ColumnDefinitions.Add(new ColumnDefinition());
+        var cells = new[]
+        {
+            StatusCell("Controller status", controllerStatus = Text("Standby", 12, "Muted")),
+            StatusCell("Active application", applicationStatus = Text("Inactive", 12, "Muted")),
+            StatusCell("Live input preview", previewStatus = Text("Neutral", 12, "Muted"))
+        };
+        for (int i = 0; i < cells.Length; i++)
+        {
+            Grid.SetColumn(cells[i], i);
+            status.Children.Add(cells[i]);
+        }
+        var statusStrip = Surface(status, 10);
+        statusStrip.Margin = new Thickness(0, 12, 0, 0);
+        DockPanel.SetDock(statusStrip, Dock.Bottom);
+        viewer.Children.Add(statusStrip);
+        viewer.Children.Add(Scene());
+        grid.Children.Add(viewer);
+
+        var splitter = new GridSplitter
+        {
+            Width = 8, Background = Brushes.Transparent,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            ResizeDirection = GridResizeDirection.Columns, ResizeBehavior = GridResizeBehavior.PreviousAndNext
+        };
+        splitter.DragCompleted += (_, _) => inspectorWidth = new GridLength(inspector.ActualWidth);
+        System.Windows.Automation.AutomationProperties.SetName(splitter, "Resize binding panel");
+        Grid.SetColumn(splitter, 1);
+        grid.Children.Add(splitter);
+
+        var panel = new DockPanel();
+        var heading = new DockPanel { LastChildFill = true };
+        selectedBadge = Text("", 17);
+        var badge = Surface(selectedBadge, 9);
+        badge.Background = Brush("Active");
+        badge.Margin = new Thickness(0, 0, 11, 0);
+        DockPanel.SetDock(badge, Dock.Left);
+        heading.Children.Add(badge);
+        selection = Text("", 16);
+        selection.FontWeight = FontWeights.SemiBold;
+        heading.Children.Add(selection);
+        binding = Text("", 14);
+        var currentBinding = Surface(binding, 9);
+        currentBinding.Background = Brush("Elevated");
+        rebind = ButtonFor("Rebind", BeginRebind);
+        rebind.Background = Brush("Accent");
+        var clear = ButtonFor("Clear", () => SetBinding(0));
+        var reset = ButtonFor("Reset", () => SetBinding(DefaultBindings.Create()[Selected]));
+        mouseChoices = Column(
+            Row(ButtonFor("Left mouse", () => BindMouse(256)), ButtonFor("Right mouse", () => BindMouse(257))),
+            Row(ButtonFor("Middle", () => BindMouse(258)), ButtonFor("Mouse 4", () => BindMouse(259)), ButtonFor("Mouse 5", () => BindMouse(260))));
         mouseChoices.Visibility = Visibility.Collapsed;
-        var right = Surface(controls, 13);
-        right.Margin = new Thickness(12,0,0,0);
-        Grid.SetColumn(right,1);
-        grid.Children.Add(right);
-        frame.Children.Add(grid);
-        SelectControl(selected);
-        return frame;
+        notice = Text(persistenceError ?? "", 11, "Muted");
+        notice.Visibility = string.IsNullOrEmpty(notice.Text) ? Visibility.Collapsed : Visibility.Visible;
+        var card = Surface(Column(heading, Text("Binding", 12, "Muted"), currentBinding,
+            Row(rebind, clear, reset), mouseChoices, notice), 14);
+        card.Margin = new Thickness(0, 0, 0, 10);
+        DockPanel.SetDock(card, Dock.Top);
+        panel.Children.Add(card);
+
+        var list = new ListBox
+        {
+            BorderThickness = new Thickness(0), Background = Brushes.Transparent,
+            Foreground = Brush("Text"), Padding = new Thickness(3),
+            ItemContainerStyle = (Style)FindResource("BindingRow")
+        };
+        ScrollViewer.SetHorizontalScrollBarVisibility(list, ScrollBarVisibility.Disabled);
+        ScrollViewer.SetVerticalScrollBarVisibility(list, ScrollBarVisibility.Auto);
+        System.Windows.Automation.AutomationProperties.SetName(list, "Controller bindings");
+        bindingList = list;
+        foreach (Control id in Enum.GetValues<Control>())
+        {
+            var line = new Grid();
+            foreach (GridLength width in new[] { new GridLength(44), new GridLength(1, GridUnitType.Star),
+                new GridLength(1, GridUnitType.Star), new GridLength(14) })
+                line.ColumnDefinitions.Add(new ColumnDefinition { Width = width });
+            var glyph = new Border { BorderBrush = Brush("Muted"), BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(5), Padding = new Thickness(5, 1, 5, 1),
+                HorizontalAlignment = HorizontalAlignment.Left, Child = Text(Glyph(id), 11) };
+            var name = Text(Display(id), 12);
+            var value = Text(DisplayInput(preferences.Bindings[id]), 12, "Muted");
+            value.TextAlignment = TextAlignment.Right;
+            value.Margin = new Thickness(4,0,8,0);
+            foreach (var text in new[] { name, value })
+            {
+                text.TextWrapping = TextWrapping.NoWrap;
+                text.TextTrimming = TextTrimming.CharacterEllipsis;
+                text.VerticalAlignment = VerticalAlignment.Center;
+            }
+            var arrow = Text("›", 16, "Muted");
+            Grid.SetColumn(name, 1); Grid.SetColumn(value, 2); Grid.SetColumn(arrow, 3);
+            line.Children.Add(glyph); line.Children.Add(name); line.Children.Add(value); line.Children.Add(arrow);
+            var item = new ListBoxItem { Tag = id, Content = line };
+            System.Windows.Automation.AutomationProperties.SetName(item, Display(id));
+            bindingRows.Add(id, (item, value));
+            list.Items.Add(item);
+        }
+        list.SelectionChanged += (_, _) =>
+        {
+            if (list.SelectedItem is ListBoxItem { Tag: Control id }) bindingSelection.Select(id);
+        };
+        panel.Children.Add(Surface(list, 6));
+        Grid.SetColumn(panel, 2);
+        grid.Children.Add(panel);
+        workspace.Children.Add(grid);
+        PresentSelection(Selected);
+        return workspace;
     }
 
-    private void SelectControl(Control id)
+    private static Border StatusCell(string title, TextBlock value)
     {
-        if (id != selected && rebinding) { CancelRebind(); Apply(); }
-        selected = id;
-        if (groupPicker is not null && !Equals(groupPicker.SelectedItem, GroupFor(id)))
-            groupPicker.SelectedItem = GroupFor(id);
-        if (controlPicker is not null && !Equals(controlPicker.SelectedItem, id))
-            controlPicker.SelectedItem = id;
+        value.TextWrapping = TextWrapping.NoWrap;
+        value.TextTrimming = TextTrimming.CharacterEllipsis;
+        var label = Text(title, 12);
+        label.FontWeight = FontWeights.SemiBold;
+        label.Margin = new Thickness(0, 0, 0, 4);
+        return new Border { Padding = new Thickness(7, 1, 5, 1), Child = new StackPanel { Children = { label, value } } };
+    }
+
+    private void PresentSelection(Control id)
+    {
+        if (rebinding) { CancelRebind(); Apply(); }
+        if (bindingRows.TryGetValue(id, out var row))
+        {
+            if (bindingList!.SelectedItem != row.Item) bindingList.SelectedItem = row.Item;
+            bindingList.ScrollIntoView(row.Item);
+        }
+        if (selectedBadge is not null) selectedBadge.Text = Glyph(id);
         if (selection is not null) selection.Text = Display(id);
-        if (binding is not null) binding.Text = DisplayInput(preferences.Bindings[id]);
-        model.ShowState(runtime.Read().State, selected);
+        string current = DisplayInput(preferences.Bindings[id]);
+        if (binding is not null) binding.Text = current;
+        if (row.Value is not null) row.Value.Text = current;
+        model.ShowState(runtime.Read().State, id);
     }
 
-    private enum ControlCategory { Face, Shoulders, Directional, Sticks }
-
-    private static ControlCategory GroupFor(Control id) => id switch
+    private static string Glyph(Control id) => id switch
     {
-        Control.A or Control.B or Control.X or Control.Y or Control.View or Control.Menu => ControlCategory.Face,
-        Control.LeftBumper or Control.RightBumper or Control.LeftTrigger or Control.RightTrigger => ControlCategory.Shoulders,
-        Control.Up or Control.Down or Control.Left or Control.Right => ControlCategory.Directional,
-        _ => ControlCategory.Sticks
+        Control.LeftBumper => "LB", Control.RightBumper => "RB",
+        Control.LeftTrigger => "LT", Control.RightTrigger => "RT",
+        Control.LeftClick => "LS", Control.RightClick => "RS",
+        Control.Up => "↑", Control.Down => "↓", Control.Left => "←", Control.Right => "→",
+        Control.View => "▣", Control.Menu => "≡",
+        Control.LeftUp => "LS ↑", Control.LeftDown => "LS ↓", Control.LeftLeft => "LS ←", Control.LeftRight => "LS →",
+        Control.RightUp => "RS ↑", Control.RightDown => "RS ↓", Control.RightLeft => "RS ←", Control.RightRight => "RS →",
+        _ => id.ToString()
     };
-
-    private static Control[] ControlsIn(ControlCategory group) => Enum.GetValues<Control>().Where(id => GroupFor(id) == group).ToArray();
 
     private StackPanel? mouseChoices;
 
@@ -304,6 +425,7 @@ public partial class MainWindow : Window
         rebind!.Content = "Cancel";
         mouseChoices!.Visibility = Visibility.Visible;
         notice!.Text = "Press a keyboard key or choose a mouse button.";
+        notice.Visibility = Visibility.Visible;
         Apply();
     }
 
@@ -312,7 +434,11 @@ public partial class MainWindow : Window
         rebinding = false;
         if (rebind is not null) rebind.Content = "Rebind";
         if (mouseChoices is not null) mouseChoices.Visibility = Visibility.Collapsed;
-        if (notice is not null) notice.Text = persistenceError ?? "";
+        if (notice is not null)
+        {
+            notice.Text = persistenceError ?? "";
+            notice.Visibility = string.IsNullOrEmpty(notice.Text) ? Visibility.Collapsed : Visibility.Visible;
+        }
     }
 
     private void BindMouse(int key)
@@ -323,14 +449,17 @@ public partial class MainWindow : Window
 
     private void SetBinding(int key)
     {
-        var bindings = new Dictionary<Control,int>(preferences.Bindings) { [selected] = key };
+        var bindings = new Dictionary<Control,int>(preferences.Bindings) { [Selected] = key };
         preferences = preferences with { Bindings = bindings };
         SavePreferences();
         CancelRebind();
-        SelectControl(selected);
-        var duplicate = bindings.FirstOrDefault(pair => pair.Key != selected && pair.Value == key);
+        PresentSelection(Selected);
+        var duplicate = key == 0 ? default : bindings.FirstOrDefault(pair => pair.Key != Selected && pair.Value == key);
         if (notice is not null && persistenceError is null && duplicate.Value != 0)
+        {
             notice.Text = $"Also assigned to {Display(duplicate.Key)}.";
+            notice.Visibility = Visibility.Visible;
+        }
         Apply();
     }
 
@@ -339,7 +468,12 @@ public partial class MainWindow : Window
         if (e.Key == Key.Escape)
         {
             if (rebinding) { CancelRebind(); Apply(); }
-            else { enabled = testing = false; if (page == "Testing Lab") Navigate(page); else Apply(); }
+            else { enabled = testing = false; if (viewerExpanded) ToggleFullscreen(); else Apply(); }
+            e.Handled = true;
+            return;
+        }
+        if (testing && !rebinding && e.Key is Key.Space or Key.Enter && Keyboard.FocusedElement is Button or ListBoxItem)
+        {
             e.Handled = true;
             return;
         }
@@ -347,7 +481,7 @@ public partial class MainWindow : Window
             ((e.Key is Key.Space or Key.Enter) && Keyboard.FocusedElement is Button button && button != rebind))
             return;
         int raw = KeyInterop.VirtualKeyFromKey(e.Key);
-        raw = raw switch { 0xA0 or 0xA1 => 0x10, 0xA2 or 0xA3 => 0x11, 0xA4 or 0xA5 => 0x12, _ => raw };
+        raw = raw switch { 0xA2 or 0xA3 => 0x11, 0xA4 or 0xA5 => 0x12, _ => raw };
         if (raw is > 0 and < 255) SetBinding(raw);
         e.Handled = true;
     }
@@ -442,6 +576,7 @@ public partial class MainWindow : Window
     private DockPanel TestingLab()
     {
         var frame = Frame("Testing Lab");
+        if (viewerExpanded) { frame.Children.Add(Scene()); return frame; }
         var readout = signals = Text("", 12, "Muted");
         readout.FontFamily = new FontFamily("Consolas");
         readout.Margin = new Thickness(0,10,0,0);
@@ -462,11 +597,18 @@ public partial class MainWindow : Window
         return frame;
     }
 
-    private static string Display(Control control) =>
-        System.Text.RegularExpressions.Regex.Replace(control.ToString(), "([a-z])([A-Z])", "$1 $2");
+    private static string Display(Control control) => control switch
+    {
+        Control.A or Control.B or Control.X or Control.Y => $"{control} Button",
+        Control.LeftClick => "Left Stick (Click)", Control.RightClick => "Right Stick (Click)",
+        Control.Up or Control.Down or Control.Left or Control.Right => $"D-pad {control}",
+        _ when (int)control >= (int)Control.LeftUp => System.Text.RegularExpressions.Regex.Replace(control.ToString(), "^(Left|Right)", "$1 Stick "),
+        _ => System.Text.RegularExpressions.Regex.Replace(control.ToString(), "([a-z])([A-Z])", "$1 $2")
+    };
     private static string DisplayInput(int value) => value == 0 ? "Unbound" : value >= 256
-        ? new[] { "Left mouse", "Right mouse", "Middle mouse", "Mouse 4", "Mouse 5" }[value - 256]
-        : KeyInterop.KeyFromVirtualKey(value).ToString();
+        ? new[] { "Left Mouse Button", "Right Mouse Button", "Middle Mouse Button", "Mouse 4", "Mouse 5" }[value - 256]
+        : value switch { DefaultBindings.LeftShift => "Left Shift", DefaultBindings.RightShift => "Right Shift",
+            0x10 => "Either Shift", _ => KeyInterop.KeyFromVirtualKey(value).ToString() };
 
     internal static Brush Brush(string key) => (Brush)Application.Current.FindResource(key);
 

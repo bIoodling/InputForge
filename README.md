@@ -17,9 +17,13 @@ dotnet test InputForge.slnx -c Release --no-build
 
 ## Try the Windows interface
 
-- On Controller, drag the model to orbit, use the wheel to zoom, or click a control to select its binding.
-  Double-click the background to reset the view. Test inputs on Dashboard or Controller
-  to visualise real mappings without a virtual device.
+- On Dashboard or Controller, drag the model to orbit, use the wheel to zoom, or select a binding
+  from the model or the independently scrolling list. Drag the divider to resize the inspector.
+  Double-click the background to reset the view.
+- Select **Test inputs** to visualise real mappings without a virtual device. Click or move inside
+  the viewport to preview mouse mappings. Stop Testing Mode to resume mouse orbit and selection.
+  New profiles and individual resets use Left Shift for B, Space for A, right mouse for LT, and
+  left mouse for RT. Existing saved assignments are retained.
 - On Mouse, use the Sensitivity, Filtering and Response Curve tabs.
 - In Testing Lab, choose **Test inputs** to use real keyboard and mouse input without creating a virtual device.
 - For virtual Xbox 360 output, separately install [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0).
@@ -34,6 +38,7 @@ foreground executable or the explicitly enabled local test. The application stor
 
 The geometry is an original Elite-inspired model with a contoured case, shell seam, faceted D-pad
 and rear paddles. It is an interpretation of the hardware, with no manufacturer mesh or textures.
+Rear paddles are visual only and Guide is omitted from the bindings supported by this backend.
 
 There are currently no GitHub release binaries. Test the native layout, hit targets and keyboard
 navigation at different Windows scaling settings before relying on this interface. Driver

@@ -30,6 +30,16 @@ internal sealed class ControllerViewport : Grid
     private Point start, last;
     private bool dragging;
     private int clicks;
+    private bool testingInput;
+    public bool TestingInput
+    {
+        get => testingInput;
+        set
+        {
+            testingInput = value;
+            if (value && IsMouseCaptured) ReleaseMouseCapture();
+        }
+    }
     private Control? selected;
 
     public event Action<Control>? ControlSelected;
@@ -248,6 +258,7 @@ internal sealed class ControllerViewport : Grid
     }
 
     public void Reset() => SetPose(OrbitPose.Front);
+    public void Front() => SetPose(OrbitPose.Front with { Distance = target.Distance });
     public void Rear() => SetPose(OrbitPose.Rear with { Distance = target.Distance });
 
     public void PauseOrbit() { paused = true; StopOrbit(); }
@@ -303,6 +314,7 @@ internal sealed class ControllerViewport : Grid
     {
         base.OnMouseLeftButtonDown(e);
         Focus();
+        if (TestingInput) { e.Handled = true; return; }
         start = last = e.GetPosition(this);
         dragging = false;
         clicks = e.ClickCount;
@@ -344,12 +356,14 @@ internal sealed class ControllerViewport : Grid
 
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
+        if (TestingInput) { e.Handled = true; return; }
         SetPose(target.Zoom(e.Delta / 120.0));
         e.Handled = true;
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
+        if (TestingInput) { e.Handled = true; return; }
         switch (e.Key)
         {
             case Key.Left: SetPose(target.Drag(-14, 0)); break;

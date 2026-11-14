@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Interop;
@@ -16,8 +15,7 @@ internal sealed record RuntimeStatus(ControllerState State, string Connection, s
 internal sealed class InputRuntime : IDisposable
 {
     private readonly Thread worker;
-    private readonly bool[] held = new bool[261];
-    private readonly Mapper mapper = new();
+    private readonly InputSession input = new();
     private readonly nint ownProcess = Environment.ProcessId;
     private RuntimeConfig config;
     private RuntimeStatus status = new(default, "Starting", "Inactive", 0);
@@ -29,11 +27,9 @@ internal sealed class InputRuntime : IDisposable
     private nint cachedWindow;
     private uint cachedPid;
     private string cachedPath = "";
-    private Vector2 delta;
     private long lastTick = Stopwatch.GetTimestamp(), rateStart = Stopwatch.GetTimestamp();
     private int reports, outputRate;
     private long nextConnect;
-    private RuntimeConfig? previousConfig;
     private string connection = "Disconnected";
     private volatile bool stopping;
 
@@ -77,13 +73,6 @@ internal sealed class InputRuntime : IDisposable
         }
     }
 
-    private void Reset()
-    {
-        Array.Clear(held);
-        delta = default;
-        mapper.Reset();
-    }
-
     private nint Focus(RuntimeConfig options)
     {
         if (!options.Test && (!options.Enabled || options.Exe.Length == 0)) return 0;
@@ -116,16 +105,14 @@ internal sealed class InputRuntime : IDisposable
     private bool ApplyScope(RuntimeConfig options)
     {
         nint foreground = Focus(options);
-        if (activeWindow != foreground || !ReferenceEquals(previousConfig, options))
+        if (input.SetScope(foreground, options))
         {
-            Reset();
             if (pad is not null)
             {
                 try { Submit(default); }
                 catch { Fault(); }
             }
             activeWindow = foreground;
-            previousConfig = options;
         }
         return foreground != 0;
     }
@@ -134,7 +121,7 @@ internal sealed class InputRuntime : IDisposable
     {
         if (message == 0x00FE)
         {
-            Reset();
+            input.Clear();
             return 0;
         }
         if (message != 0x00FF || !ApplyScope(Volatile.Read(ref config))) return 0;
@@ -143,18 +130,25 @@ internal sealed class InputRuntime : IDisposable
         uint bytes = GetRawInputData(lParam, 0x10000003, ref packet, ref size, (uint)Marshal.SizeOf<RawHeader>());
         if (bytes == uint.MaxValue || bytes < 40) return 0;
         if (packet.Header.Type == 1 && packet.Key is > 0 and < 255)
-            held[packet.Key] = (packet.KeyFlags & 1) == 0;
+        {
+            bool down = (packet.KeyFlags & 1) == 0;
+            if (packet.Key is 0x10 or DefaultBindings.LeftShift or DefaultBindings.RightShift)
+            {
+                int side = packet.MakeCode == 0x36 ? DefaultBindings.RightShift : DefaultBindings.LeftShift;
+                input.SetButton(side, down);
+            }
+            else input.SetButton(packet.Key, down);
+        }
         if (packet.Header.Type == 0 && bytes >= 48)
         {
             if ((packet.MouseFlags & 1) == 0)
             {
-                delta.X = Math.Clamp(delta.X + packet.X, -4096, 4096);
-                delta.Y = Math.Clamp(delta.Y + packet.Y, -4096, 4096);
+                input.Move(packet.X, packet.Y);
             }
             for (int i = 0; i < 5; i++)
             {
-                if ((packet.MouseButtons & (1 << (2 * i))) != 0) held[256 + i] = true;
-                if ((packet.MouseButtons & (2 << (2 * i))) != 0) held[256 + i] = false;
+                if ((packet.MouseButtons & (1 << (2 * i))) != 0) input.SetButton(256 + i, true);
+                if ((packet.MouseButtons & (2 << (2 * i))) != 0) input.SetButton(256 + i, false);
             }
         }
         return 0;
@@ -185,8 +179,7 @@ internal sealed class InputRuntime : IDisposable
             catch { Fault(); }
         }
 
-        var output = scoped ? mapper.Update(options.Bindings, held, delta, options.Mouse, seconds) : default;
-        delta = default;
+        var output = input.Update(options.Bindings, options.Mouse, seconds);
         if (pad is not null)
         {
             try
@@ -194,7 +187,7 @@ internal sealed class InputRuntime : IDisposable
                 if (GetForegroundWindow() != activeWindow || !ReferenceEquals(options, Volatile.Read(ref config)))
                 {
                     output = default;
-                    Reset();
+                    input.Clear();
                     Submit(output);
                     Disconnect();
                     connection = "Standby";
@@ -217,7 +210,7 @@ internal sealed class InputRuntime : IDisposable
             rateStart = now;
         }
         var next = new RuntimeStatus(output, connection,
-            scoped ? options.Test ? "InputForge Testing Lab" : System.IO.Path.GetFileName(options.Exe) : "Inactive", outputRate);
+            scoped ? options.Test ? "InputForge · Testing Mode" : System.IO.Path.GetFileName(options.Exe) : "Inactive", outputRate);
         if (next != status) Volatile.Write(ref status, next);
     }
 
@@ -238,7 +231,7 @@ internal sealed class InputRuntime : IDisposable
     private void Fault()
     {
         Disconnect();
-        Reset();
+        input.Clear();
         connection = "ViGEmBus unavailable";
         nextConnect = Stopwatch.GetTimestamp() + 3 * Stopwatch.Frequency;
     }
@@ -278,6 +271,7 @@ internal sealed class InputRuntime : IDisposable
     {
         [FieldOffset(0)] internal RawHeader Header;
         [FieldOffset(24)] internal ushort MouseFlags;
+        [FieldOffset(24)] internal ushort MakeCode;
         [FieldOffset(26)] internal ushort KeyFlags;
         [FieldOffset(28)] internal ushort MouseButtons;
         [FieldOffset(30)] internal ushort Key;
