@@ -656,13 +656,14 @@ public partial class MainWindow : Window
         var pointLabel = Text("Point 1", 13, "Muted");
         var mode = new ComboBox { ItemsSource = Enum.GetValues<ResponseCurve>(), SelectedItem = current.Curve, MinWidth = 124 };
         mode.ItemTemplate = CurveNames.Template;
-        var chart = new CurveView(current, value =>
+        var chart = new CurveView(current) { Height = 220, Focusable = true };
+        chart.Changed += value =>
         {
             ChangeMouse(preferences.Mouse with { Curve = value.Curve, Point1 = value.Point1, Point2 = value.Point2,
                 Input1 = value.Input1, Input2 = value.Input2, InterpolatedKnots = value.InterpolatedKnots });
             mode.SelectedItem = ResponseCurve.Custom;
             FillCoordinates(value);
-        }) { Height = 220, Focusable = true };
+        };
         void FillCoordinates(MouseSettings value)
         {
             var custom = CurveKnots.AsCustom(value);

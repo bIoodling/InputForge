@@ -6,7 +6,7 @@ using InputForge.Core;
 
 namespace InputForge.App;
 
-internal sealed class CurveView(MouseSettings settings, Action<MouseSettings>? onChanged = null) : FrameworkElement
+internal sealed class CurveView(MouseSettings settings) : FrameworkElement
 {
     private MouseSettings mouse = settings;
     private int selected;
@@ -14,6 +14,7 @@ internal sealed class CurveView(MouseSettings settings, Action<MouseSettings>? o
     private Rect Plot => new(38, 12, Math.Max(1, ActualWidth - 53), Math.Max(1, ActualHeight - 44));
 
     public event Action<int>? PointSelected;
+    public event Action<MouseSettings>? Changed;
     public int Selected => selected;
     public MouseSettings Settings => mouse;
 
@@ -25,11 +26,11 @@ internal sealed class CurveView(MouseSettings settings, Action<MouseSettings>? o
 
     public void MoveSelected(float input, float output)
     {
-        if (onChanged is null) return;
+        if (Changed is null) return;
         var next = CurveKnots.Move(mouse, selected, input, output);
         if (next == mouse) return;
         UpdateSettings(next);
-        onChanged(next);
+        Changed(next);
     }
 
     public void Select(int index)
@@ -74,14 +75,14 @@ internal sealed class CurveView(MouseSettings settings, Action<MouseSettings>? o
         curve.Freeze();
         var red = MainWindow.Brush("Accent");
         dc.DrawGeometry(null, new Pen(red, 2), curve);
-        if (onChanged is null) return;
+        if (Changed is null) return;
         for (int i = 0; i < 2; i++)
             dc.DrawEllipse(red, i == selected ? new Pen(MainWindow.Brush("Text"), 1.5) : null, Handle(i), 5, 5);
     }
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
-        if (onChanged is null) return;
+        if (Changed is null) return;
         var at = e.GetPosition(this);
         var first = (at - Handle(0)).Length;
         var second = (at - Handle(1)).Length;
@@ -111,7 +112,7 @@ internal sealed class CurveView(MouseSettings settings, Action<MouseSettings>? o
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (onChanged is null) return;
+        if (Changed is null) return;
         var custom = CurveKnots.AsCustom(mouse);
         float input = selected == 0 ? custom.Input1 : custom.Input2;
         float output = selected == 0 ? custom.Point1 : custom.Point2;
