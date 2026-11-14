@@ -234,7 +234,10 @@ public partial class MainWindow : Window
                 $"Right   {current.State.Right.X,6:F2}  {current.State.Right.Y,6:F2}\n" +
                 $"LT      {current.State.LT:F2}    RT    {current.State.RT:F2}\n" +
                 $"Input events   {current.InputEventsPerSecond}/s    Reports sent   {current.ReportsPerSecond}/s\n" +
-                $"Latest event   {(current.Input.Length == 0 ? "—" : current.Input)}";
+                $"Latest event   {(current.Input.Length == 0 ? "—" : current.Input)}\n" +
+                (current.MeanMappingMicroseconds > 0
+                    ? $"Mapping computation   {current.MeanMappingMicroseconds:F1} µs mean · {current.PeakMappingMicroseconds:F1} µs peak"
+                    : "Mapping computation   —");
         if (model.IsVisible) model.ShowState(current.State, page == "Controller" ? Selected : null);
         if (mouseOutput is not null)
             mouseOutput.Text = $"Right stick  X {current.State.Right.X:+0.00;-0.00;0.00}  Y {current.State.Right.Y:+0.00;-0.00;0.00}";

@@ -12,7 +12,8 @@ namespace InputForge.App;
 
 internal sealed record RuntimeConfig(bool Enabled, bool Test, bool CaptureAllowed, ProfileLibrary Library, Preferences Editing);
 internal sealed record RuntimeStatus(ControllerState State, string Connection, string Application, int ReportsPerSecond,
-    string? Profile = null, string Input = "", int InputEventsPerSecond = 0);
+    string? Profile = null, string Input = "", int InputEventsPerSecond = 0,
+    double MeanMappingMicroseconds = 0, double PeakMappingMicroseconds = 0);
 
 internal sealed class InputRuntime : IDisposable
 {
@@ -34,6 +35,9 @@ internal sealed class InputRuntime : IDisposable
     private long lastTick = Stopwatch.GetTimestamp(), rateStart = Stopwatch.GetTimestamp();
     private int reports, outputRate;
     private int events, inputRate;
+    private long mappingTicks, peakTicks;
+    private int mappingSamples;
+    private double meanMapping, peakMapping;
     private (int Kind, int A, int B) latestInput;
     private NamedProfile? activeProfile;
     private long nextConnect;
@@ -194,7 +198,15 @@ internal sealed class InputRuntime : IDisposable
         }
 
         var settings = activeProfile?.Settings ?? options.Editing;
+        long mappingStart = Stopwatch.GetTimestamp();
         var output = input.Update(settings.Bindings, settings.Mouse, seconds);
+        if (scoped)
+        {
+            long duration = Stopwatch.GetTimestamp() - mappingStart;
+            mappingTicks += duration;
+            peakTicks = Math.Max(peakTicks, duration);
+            mappingSamples++;
+        }
         if (scoped && options.Test) samples.Writer.TryWrite(input.LastMouseSample);
         if (pad is not null)
         {
@@ -225,11 +237,17 @@ internal sealed class InputRuntime : IDisposable
             reports = 0;
             inputRate = (int)(events / elapsed);
             events = 0;
+            double microsecondsPerTick = 1_000_000.0 / Stopwatch.Frequency;
+            meanMapping = mappingSamples == 0 ? 0 : mappingTicks * microsecondsPerTick / mappingSamples;
+            peakMapping = peakTicks * microsecondsPerTick;
+            mappingTicks = peakTicks = 0;
+            mappingSamples = 0;
             rateStart = now;
         }
         var next = new RuntimeStatus(output, connection,
             scoped ? options.Test ? "InputForge · Testing Mode" : System.IO.Path.GetFileName(settings.Application) : "Inactive",
-            outputRate, activeProfile?.Name, scoped && options.Test ? InputDescription() : "", scoped ? inputRate : 0);
+            outputRate, activeProfile?.Name, scoped && options.Test ? InputDescription() : "", scoped ? inputRate : 0,
+            scoped ? meanMapping : 0, scoped ? peakMapping : 0);
         if (next != status) Volatile.Write(ref status, next);
     }
 

@@ -17,6 +17,11 @@ dotnet test InputForge.slnx -c Release --no-build
 
 ## Try the Windows interface
 
+- Use **Calibrate…** on the Mouse page to preview eight tuning steps locally. Values reach the profile only after **Save to profile**.
+- Testing Lab graphs raw mouse magnitude, the shaped target and final right-stick magnitude. Start local testing to collect data. **Record motion** keeps up to 1,000 mouse samples in memory. **Replay** compares the current response with another profile and produces no virtual output.
+- Use **Compare** on Profiles for a side-by-side settings comparison, or press **Ctrl+K** in InputForge to find pages, profiles, calibration and diagnostics.
+- Mapping timing in Testing Lab covers computation only. It excludes device, driver, render and game delay. A saturation warning is based on observed local samples and may reflect intentional tuning.
+
 - In **Mouse**, drag either interior curve point, use the arrow keys with the graph focused,
   or select a point and enter X/Y coordinates. Curve edits are saved to the selected profile.
   The two interpolation points are ordered between fixed endpoints. The graph shows the

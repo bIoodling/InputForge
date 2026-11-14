@@ -7,6 +7,14 @@ namespace InputForge.Tests;
 public class SignalTests
 {
     [Fact]
+    public void FullSpeedMouseRespectsOutputLimitAndRemainsNeutralInsideDeadzone()
+    {
+        var mapper = new Mapper();
+        var settings = new MouseSettings(Filter: Smoothing.Off, MaxOutput: .5f, AntiDeadzone: .1f);
+        Assert.Equal(Vector2.Zero, mapper.ProcessMouse(new(.01f, 0), settings, .008f));
+        Assert.Equal(new Vector2(.5f, 0), mapper.ProcessMouse(new(100, 0), settings, .008f));
+    }
+    [Fact]
     public void StalledOrInvalidTickCannotReplayStaleMouseMotion()
     {
         var mapper = new Mapper();
