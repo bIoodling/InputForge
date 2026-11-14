@@ -7,6 +7,7 @@ public sealed class InputSession
     private readonly bool[] held = new bool[261];
     private readonly Mapper mapper = new();
     private Vector2 delta;
+    private readonly MotionWindow motion = new();
     private nint window;
     private object? configuration;
     public MouseSample LastMouseSample { get; private set; }
@@ -24,6 +25,7 @@ public sealed class InputSession
     {
         Array.Clear(held);
         delta = default;
+        motion.Clear();
         mapper.Reset();
         LastMouseSample = default;
     }
@@ -39,15 +41,29 @@ public sealed class InputSession
     public void Move(int x, int y)
     {
         if (window == 0) return;
-        delta.X = Math.Clamp(delta.X + x, -4096, 4096);
-        delta.Y = Math.Clamp(delta.Y + y, -4096, 4096);
+        delta += new Vector2(x, y);
     }
 
-    public ControllerState Update(IReadOnlyDictionary<Control, int> bindings, MouseSettings mouse, float seconds)
+    public bool Move(int x, int y, long stamp, long now)
+    {
+        if (window == 0 || !motion.Add(x, y, stamp, now)) return false;
+        delta = Vector2.Clamp(delta + new Vector2(x, y), new(-1e9f), new(1e9f));
+        return true;
+    }
+
+    public ControllerState Update(IReadOnlyDictionary<Control, int> bindings, MouseSettings mouse, float seconds, long? now = null)
     {
         if (window == 0) return default;
-        var state = mapper.Update(bindings, held, delta, mouse, seconds);
-        LastMouseSample = new(seconds, delta, mapper.MouseTarget, state.Right);
+        Vector2 raw = delta;
+        float? windowSeconds = null;
+        Vector2 sampled = raw;
+        if (now is { } tick)
+        {
+            sampled = motion.Counts(tick);
+            windowSeconds = MotionWindow.WindowMilliseconds / 1000f;
+        }
+        var state = mapper.Update(bindings, held, sampled, mouse, seconds, windowSeconds);
+        LastMouseSample = new(seconds, raw, mapper.MouseTarget, state.Right, sampled, windowSeconds);
         delta = default;
         return state;
     }

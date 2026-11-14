@@ -31,6 +31,7 @@ public partial class MainWindow : Window
     private sealed record InterfaceOptions(bool ReduceMotion = false, bool Capture = true, string StartPage = "Dashboard",
         bool PreviewDiagnostics = false, bool AutoCamera = true, int CameraIdle = 2,
         bool StartMinimized = false, bool ConfirmExit = true, bool RememberWindow = false,
+        int OutputRate = 125,
         double? WindowLeft = null, double? WindowTop = null);
     private InterfaceOptions options;
     private bool enabled, testing;
@@ -83,7 +84,7 @@ public partial class MainWindow : Window
             cameraBeforeShoulder = null;
             testCamera.Manual(ClockSeconds());
         };
-        Toggle.Click += (_, _) => { enabled = !enabled; Apply(); };
+        Toggle.Click += (_, _) => ToggleMapping();
         ProfileSelector.SelectionChanged += (_, _) =>
         {
             if (!updatingProfileSelector && ProfileSelector.SelectedItem is NamedProfile profile)
@@ -165,7 +166,21 @@ public partial class MainWindow : Window
         }
     }
 
-    private RuntimeConfig Config() => new(!rebinding && enabled, !rebinding && testing, options.Capture, library, preferences);
+    private RuntimeConfig Config() => new(!rebinding && enabled, !rebinding && testing, options.Capture, library, preferences, options.OutputRate);
+
+    private void ToggleMapping()
+    {
+        if (!enabled && !runtime.Rearm()) return;
+        enabled = !enabled;
+        Apply();
+    }
+
+    private void StopMapping()
+    {
+        runtime.EmergencyStop();
+        enabled = testing = false;
+        Apply();
+    }
 
     private void CommitProfileSettings()
     {
@@ -214,6 +229,11 @@ public partial class MainWindow : Window
 
     private void RefreshOutput()
     {
+        if (runtime.StopReason is not null && (enabled || testing))
+        {
+            enabled = testing = false;
+            Apply();
+        }
         RefreshSignals();
         UpdatePreviewDiagnostics();
         var current = runtime.Read();
@@ -239,6 +259,8 @@ public partial class MainWindow : Window
                 $"LT      {current.State.LT:F2}    RT    {current.State.RT:F2}\n" +
                 $"Input events   {current.InputEventsPerSecond}/s    Reports sent   {current.ReportsPerSecond}/s\n" +
                 $"Latest event   {(current.Input.Length == 0 ? "—" : current.Input)}\n" +
+                $"Missed deadlines {current.MissedDeadlines} · Rejected motion packets {current.RejectedMotion}\n" +
+                $"Submitted report   {(current.Submitted is { } report ? report.ToString() : "None")}\n" +
                 (current.MeanMappingMicroseconds > 0
                     ? $"Mapping computation   {current.MeanMappingMicroseconds:F1} µs mean · {current.PeakMappingMicroseconds:F1} µs peak"
                     : "Mapping computation   —");
@@ -315,7 +337,7 @@ public partial class MainWindow : Window
         scene.Children.Add(model);
         var fullscreen = ButtonFor(viewerExpanded ? "Exit fullscreen" : "Fullscreen", ToggleFullscreen);
         var views = page == "Testing Lab"
-            ? Buttons(fullscreen, localTest = ButtonFor("Test inputs", () => { testing = !testing; Apply(); }))
+            ? Buttons(fullscreen, localTest = MouseTestButton())
             : Buttons(fullscreen);
         views.HorizontalAlignment = HorizontalAlignment.Right;
         localTestLabel = Text("", 11, "Muted");
@@ -366,7 +388,7 @@ public partial class MainWindow : Window
         var layout = new Grid();
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        dashboardToggle = ButtonFor("Enable mapping", () => { enabled = !enabled; Apply(); });
+        dashboardToggle = ButtonFor("Enable mapping", ToggleMapping);
         dashboardToggle.Background = Brush("Accent");
         var shortcuts = Buttons(ButtonFor("Controller", () => Navigate("Controller")),
             ButtonFor("Mouse", () => Navigate("Mouse")), ButtonFor("Profiles", () => Navigate("Profiles")));
@@ -644,7 +666,7 @@ public partial class MainWindow : Window
         if (e.Key == Key.Escape)
         {
             if (rebinding) { CancelRebind(); Apply(); }
-            else { enabled = testing = false; if (viewerExpanded) ToggleFullscreen(); else Apply(); }
+            else { StopMapping(); if (viewerExpanded) ToggleFullscreen(); }
             e.Handled = true;
             return;
         }
@@ -658,7 +680,7 @@ public partial class MainWindow : Window
             return;
         int raw = KeyInterop.VirtualKeyFromKey(e.Key);
         raw = raw switch { 0xA2 or 0xA3 => 0x11, 0xA4 or 0xA5 => 0x12, _ => raw };
-        if (raw is > 0 and < 255) SetBinding(raw);
+        if (raw is > 0 and < 255 && raw != EngineSafety.EmergencyKey) SetBinding(raw);
         e.Handled = true;
     }
 
@@ -899,6 +921,7 @@ public partial class MainWindow : Window
     {
         var button = ButtonFor(testing ? "Stop input test" : "Test inputs", () =>
         {
+            if (!testing && !runtime.Rearm(localTest: true)) return;
             testing = !testing;
             Apply();
         });
@@ -1104,7 +1127,7 @@ public partial class MainWindow : Window
         };
         var timeout = Combo("Return delay in seconds", new[] { 1, 2, 3, 5 }, options.CameraIdle,
             seconds => SetInterfaceOptions(options with { CameraIdle = seconds }));
-        var emergency = ButtonFor("Emergency disable", () => { enabled = testing = false; Apply(); });
+        var emergency = ButtonFor("Emergency disable", StopMapping);
         emergency.Background = Brush("Accent");
         var toolbar = new WrapPanel { Children = { emergency, auto, Row(Text("Return delay", 13, "Muted"), timeout) } };
         foreach (FrameworkElement item in toolbar.Children) item.Margin = new Thickness(0,0,12,8);
@@ -1190,7 +1213,10 @@ public partial class MainWindow : Window
             Option("Confirm exit while mapping is armed", options.ConfirmExit, value => SetInterfaceOptions(options with { ConfirmExit = value }))), 22);
         var appearance = Surface(Column(Section("Appearance and performance"), motion, diagnostics,
             Text("Preview pauses while minimised. Frame timing is available in developer diagnostics.", 13, "Muted")),22);
-        var safety = Surface(Column(Section("Input and safety"), capture,
+        var rate = Combo("Output target rate", new[] { 125, 250, 500 }, options.OutputRate,
+            value => SetInterfaceOptions(options with { OutputRate = value }));
+        var safety = Surface(Column(Section("Input and safety"), capture, Row(Text("Target reports/sec"), rate),
+            Text("Emergency stop: Ctrl+Alt+Shift+F11, or Esc in InputForge.", 13, "Muted"),
             Text("Input always passes through. Virtual output releases when the associated application loses focus. Esc disables mapping in this window.", 13, "Muted")),22);
         var backend = Surface(Column(Section("Controller"), controllerStatus = Text(runtime.Read().Connection, 14),
             Text("ViGEmBus · Xbox 360 output", 13, "Muted"), ButtonFor("Open Testing Lab", () => Navigate("Testing Lab"))),22);
@@ -1396,11 +1422,11 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        runtime.Dispose();
         refresh.Stop();
         currentProcess.Dispose();
         delayedSave.Stop();
         SavePreferences();
-        runtime.Dispose();
         base.OnClosed(e);
     }
 

@@ -13,9 +13,10 @@ public partial class MainWindow
 
     private void CalibrateMouse()
     {
-        if (!options.Capture || recording)
+        if (!options.Capture || recording || !runtime.Rearm(localTest: true))
         {
-            ShowDarkDialog("Mouse calibration", Text(recording ? "Stop your recording first." : "Enable scoped capture in Settings first."), "Done");
+            ShowDarkDialog("Mouse calibration", Text(recording ? "Stop your recording first." :
+                !options.Capture ? "Enable scoped capture in Settings first." : "The input engine is unavailable."), "Done");
             return;
         }
         bool previous = testing;

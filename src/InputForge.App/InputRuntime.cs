@@ -2,18 +2,16 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Interop;
-using System.Windows.Threading;
 using System.Threading.Channels;
 using InputForge.Core;
-using Nefarius.ViGEm.Client;
-using Nefarius.ViGEm.Client.Targets;
 
 namespace InputForge.App;
 
-internal sealed record RuntimeConfig(bool Enabled, bool Test, bool CaptureAllowed, ProfileLibrary Library, Preferences Editing);
+internal sealed record RuntimeConfig(bool Enabled, bool Test, bool CaptureAllowed, ProfileLibrary Library, Preferences Editing, int Rate = 125);
 internal sealed record RuntimeStatus(ControllerState State, string Connection, string Application, int ReportsPerSecond,
     string? Profile = null, string Input = "", int InputEventsPerSecond = 0,
-    double MeanMappingMicroseconds = 0, double PeakMappingMicroseconds = 0);
+    double MeanMappingMicroseconds = 0, double PeakMappingMicroseconds = 0,
+    long MissedDeadlines = 0, long RejectedMotion = 0, ControllerReport? Submitted = null);
 
 internal sealed class InputRuntime : IDisposable
 {
@@ -24,9 +22,17 @@ internal sealed class InputRuntime : IDisposable
     private readonly nint ownProcess = Environment.ProcessId;
     private RuntimeConfig config;
     private RuntimeStatus status = new(default, "Starting", "Inactive", 0);
-    private Dispatcher? dispatcher;
-    private ViGEmClient? bus;
-    private IXbox360Controller? pad;
+    private readonly EngineSafety safety = new();
+    private readonly Timer watchdog;
+    private long heartbeat = Stopwatch.GetTimestamp();
+    private int outputExpected;
+    private volatile bool hotkeyRegistered;
+    private volatile bool failed;
+    private long rejectedMotion;
+    private uint scopeStart;
+    private bool scopeChanged;
+    private ControllerReport? submitted;
+    private VirtualXbox? pad;
     private HwndSource? source;
     private nint activeWindow;
     private nint cachedWindow;
@@ -40,7 +46,7 @@ internal sealed class InputRuntime : IDisposable
     private double meanMapping, peakMapping;
     private (int Kind, int A, int B) latestInput;
     private NamedProfile? activeProfile;
-    private long nextConnect;
+    private bool sessionNotifications;
     private string connection = "Disconnected";
     private volatile bool stopping;
 
@@ -49,46 +55,71 @@ internal sealed class InputRuntime : IDisposable
         config = initial;
         worker = new Thread(Run) { IsBackground = true, Name = "InputForge Raw Input" };
         worker.SetApartmentState(ApartmentState.STA);
+        watchdog = new Timer(_ =>
+        {
+            if (!stopping && Volatile.Read(ref outputExpected) != 0 &&
+                Stopwatch.GetElapsedTime(Volatile.Read(ref heartbeat)).TotalMilliseconds > 750)
+                safety.Trip("Output worker stopped responding");
+        }, null, 250, 250);
         worker.Start();
     }
 
-    public void Configure(RuntimeConfig value) => Volatile.Write(ref config, value);
+    public string? StopReason => safety.Reason;
+    public bool HotkeyRegistered => hotkeyRegistered;
+    public void EmergencyStop() => safety.Trip("Emergency stop");
+    public bool Rearm(bool localTest = false)
+    {
+        if (failed || (!localTest && !hotkeyRegistered) ||
+            (Volatile.Read(ref outputExpected) != 0 && safety.Reason is not null)) return false;
+        var reason = safety.Reason;
+        return reason is null || safety.Acknowledge(reason);
+    }
+    public void Configure(RuntimeConfig value)
+    {
+        if (Volatile.Read(ref config) != value) Volatile.Write(ref config, value);
+    }
     public RuntimeStatus Read() => Volatile.Read(ref status);
     public bool ReadSample(out MouseSample sample) => samples.Reader.TryRead(out sample);
 
     private void Run()
     {
-        dispatcher = Dispatcher.CurrentDispatcher;
         try
         {
             if (stopping) return;
             source = new HwndSource(new HwndSourceParameters("InputForge Raw Input") { ParentWindow = new nint(-3) });
             source.AddHook(OnMessage);
+            hotkeyRegistered = RegisterHotKey(source.Handle, 1, 0x4007, EngineSafety.EmergencyKey);
+            sessionNotifications = WTSRegisterSessionNotification(source.Handle, 0);
             var devices = new RawDevice[] { new(1, 2, 0x2100, source.Handle), new(1, 6, 0x2100, source.Handle) };
             if (!RegisterRawInputDevices(devices, (uint)devices.Length, (uint)Marshal.SizeOf<RawDevice>()))
                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
 
-            var timer = new DispatcherTimer(DispatcherPriority.Input, dispatcher) { Interval = TimeSpan.FromMilliseconds(8) };
-            timer.Tick += (_, _) => Update();
-            timer.Start();
-            try { if (!stopping) Dispatcher.Run(); }
-            finally { timer.Stop(); }
+            NativeReportLoop.Run(() => stopping,
+                () => activeWindow == 0 && pad is null ? 60 : SupportedRate(Volatile.Read(ref config).Rate), Update);
         }
         catch (Exception ex)
         {
+            failed = true;
+            safety.Trip($"Input worker failed ({ex.GetType().Name})");
             Volatile.Write(ref status, new(default, $"Input unavailable ({ex.GetType().Name})", "Inactive", 0));
         }
         finally
         {
             Disconnect();
+            if (sessionNotifications && source is not null) WTSUnRegisterSessionNotification(source.Handle);
+            if (hotkeyRegistered && source is not null) UnregisterHotKey(source.Handle, 1);
+            hotkeyRegistered = false;
             source?.Dispose();
         }
     }
 
+    private static int SupportedRate(int rate) => rate is 125 or 250 or 500 ? rate : 125;
+
     private nint Focus(RuntimeConfig options, out NamedProfile? profile)
     {
         profile = null;
-        if (!options.CaptureAllowed || (!options.Test && !options.Enabled)) return 0;
+        if (stopping || safety.Reason is not null || !options.CaptureAllowed ||
+            (!options.Test && (!options.Enabled || !hotkeyRegistered))) return 0;
         nint foreground = GetForegroundWindow();
         if (foreground == 0) return 0;
         GetWindowThreadProcessId(foreground, out uint pid);
@@ -122,11 +153,8 @@ internal sealed class InputRuntime : IDisposable
         if (input.SetScope(foreground, options))
         {
             latestInput = default;
-            if (pad is not null)
-            {
-                try { Submit(default); }
-                catch { Fault(); }
-            }
+            scopeChanged = true;
+            scopeStart = unchecked((uint)Environment.TickCount);
             activeWindow = foreground;
         }
         return foreground != 0;
@@ -134,12 +162,35 @@ internal sealed class InputRuntime : IDisposable
 
     private nint OnMessage(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
     {
+        if (message == 0x0312 && wParam == 1)
+        {
+            EmergencyStop();
+            handled = true;
+            return 0;
+        }
+        if ((message == 0x02B1 && (wParam == 7 || wParam == 2 || wParam == 4)) ||
+            (message == 0x0218 && (wParam == 4 || wParam == 18)))
+        {
+            if (config.Enabled || config.Test) safety.Trip("Windows session or power transition");
+            input.Clear();
+            return 0;
+        }
         if (message == 0x00FE)
         {
             input.Clear();
             return 0;
         }
         if (message != 0x00FF || !ApplyScope(Volatile.Read(ref config))) return 0;
+        uint messageTime = unchecked((uint)GetMessageTime());
+        long uptime = Environment.TickCount64;
+        uint age = unchecked((uint)uptime - messageTime);
+        if (unchecked((int)(messageTime - scopeStart)) < 0) return 0;
+        if (age > 1000)
+        {
+            input.Clear();
+            safety.Trip("Input message backlog exceeded safety limit");
+            return 0;
+        }
         var packet = new RawPacket();
         uint size = (uint)Marshal.SizeOf<RawPacket>();
         uint bytes = GetRawInputData(lParam, 0x10000003, ref packet, ref size, (uint)Marshal.SizeOf<RawHeader>());
@@ -154,14 +205,17 @@ internal sealed class InputRuntime : IDisposable
                 int side = packet.MakeCode == 0x36 ? DefaultBindings.RightShift : DefaultBindings.LeftShift;
                 input.SetButton(side, down);
             }
-            else input.SetButton(packet.Key, down);
+            else if (packet.Key != EngineSafety.EmergencyKey) input.SetButton(packet.Key, down);
         }
         if (packet.Header.Type == 0 && bytes >= 48)
         {
             if (config.Test) latestInput = packet.MouseButtons == 0 ? (2, packet.X, packet.Y) : (3, packet.MouseButtons, 0);
             if ((packet.MouseFlags & 1) == 0)
             {
-                input.Move(packet.X, packet.Y);
+                // GetMessageTime is coarse. Use it to reject old queued packets;
+                // use the monotonic high-resolution clock for fresh motion bins.
+                long stamp = MotionClock(Stopwatch.GetTimestamp());
+                if (age >= 32 || !input.Move(packet.X, packet.Y, stamp, stamp)) rejectedMotion++;
             }
             for (int i = 0; i < 5; i++)
             {
@@ -172,34 +226,43 @@ internal sealed class InputRuntime : IDisposable
         return 0;
     }
 
-    private void Update()
+    private void Update(long now, long missed)
     {
         var options = Volatile.Read(ref config);
-        var now = Stopwatch.GetTimestamp();
+        Volatile.Write(ref heartbeat, now);
         float seconds = (float)Stopwatch.GetElapsedTime(lastTick, now).TotalSeconds;
         lastTick = now;
+        if (seconds > .75f && pad is not null) safety.Trip("Output paused for more than 750 ms");
         bool scoped = ApplyScope(options);
+        if (scopeChanged)
+        {
+            scopeChanged = false;
+            if (pad is not null)
+            {
+                try { Submit(default); }
+                catch { Fault(); scoped = false; }
+            }
+        }
+        Volatile.Write(ref outputExpected, scoped && !options.Test || pad is not null ? 1 : 0);
         if (!scoped || options.Test)
         {
             if (pad is not null) Disconnect();
-            connection = options.Test ? "Testing locally" : "Standby";
+            connection = safety.Reason ?? (!hotkeyRegistered ? "Emergency shortcut unavailable" :
+                options.Test ? "Testing locally" : "Standby");
         }
-        else if (pad is null && now >= nextConnect)
+        else if (pad is null)
         {
             try
             {
-                bus = new ViGEmClient();
-                pad = bus.CreateXbox360Controller();
-                pad.AutoSubmitReport = false;
-                pad.Connect();
+                pad = new VirtualXbox();
                 connection = "Connected";
             }
-            catch { Fault(); }
+            catch { Fault(); scoped = false; }
         }
 
         var settings = activeProfile?.Settings ?? options.Editing;
         long mappingStart = Stopwatch.GetTimestamp();
-        var output = input.Update(settings.Bindings, settings.Mouse, seconds);
+        var output = scoped ? input.Update(settings.Bindings, settings.Mouse, seconds, MotionClock(now)) : default;
         if (scoped)
         {
             long duration = Stopwatch.GetTimestamp() - mappingStart;
@@ -212,7 +275,8 @@ internal sealed class InputRuntime : IDisposable
         {
             try
             {
-                if (GetForegroundWindow() != activeWindow || !ReferenceEquals(options, Volatile.Read(ref config)))
+                if (stopping || safety.Reason is not null || GetForegroundWindow() != activeWindow ||
+                    !ReferenceEquals(options, Volatile.Read(ref config)))
                 {
                     output = default;
                     input.Clear();
@@ -246,10 +310,12 @@ internal sealed class InputRuntime : IDisposable
         }
         var next = new RuntimeStatus(output, connection,
             scoped ? options.Test ? "InputForge · Testing Mode" : System.IO.Path.GetFileName(settings.Application) : "Inactive",
-            outputRate, activeProfile?.Name, scoped && options.Test ? InputDescription() : "", scoped ? inputRate : 0,
-            scoped ? meanMapping : 0, scoped ? peakMapping : 0);
+            pad is null ? 0 : outputRate, activeProfile?.Name, scoped && options.Test ? InputDescription() : "", scoped ? inputRate : 0,
+            scoped ? meanMapping : 0, scoped ? peakMapping : 0, missed, rejectedMotion, submitted);
         if (next != status) Volatile.Write(ref status, next);
     }
+
+    private static long MotionClock(long ticks) => ticks / (Stopwatch.Frequency / 1000);
 
     private string InputDescription() => latestInput.Kind switch
     {
@@ -262,46 +328,30 @@ internal sealed class InputRuntime : IDisposable
     private void Submit(ControllerState state)
     {
         if (pad is null) return;
-        static short Axis(float value) => (short)MathF.Round(value * (value < 0 ? 32768 : 32767));
-        pad.ButtonState = state.XboxButtons;
-        pad.LeftThumbX = Axis(state.Left.X);
-        pad.LeftThumbY = Axis(state.Left.Y);
-        pad.RightThumbX = Axis(state.Right.X);
-        pad.RightThumbY = Axis(state.Right.Y);
-        pad.LeftTrigger = (byte)MathF.Round(state.LT * 255);
-        pad.RightTrigger = (byte)MathF.Round(state.RT * 255);
-        pad.SubmitReport();
+        if (!ControllerReport.TryEncode(state, out var report)) throw new InvalidOperationException("Invalid controller state.");
+        pad.Submit(report);
+        submitted = report;
     }
 
     private void Fault()
     {
+        safety.Trip("ViGEmBus unavailable");
         Disconnect();
         input.Clear();
         connection = "ViGEmBus unavailable";
-        nextConnect = Stopwatch.GetTimestamp() + 3 * Stopwatch.Frequency;
     }
 
     private void Disconnect()
     {
-        if (pad is not null)
-        {
-            try { Submit(default); } catch { }
-            try { pad.Disconnect(); } catch { }
-            // The vendor's interface does not expose IDisposable on all versions.
-            if (pad is IDisposable disposable)
-            {
-                try { disposable.Dispose(); } catch { }
-            }
-            pad = null;
-        }
-        try { bus?.Dispose(); } catch { }
-        bus = null;
+        pad?.Dispose();
+        pad = null;
+        submitted = null;
     }
 
     public void Dispose()
     {
         stopping = true;
-        dispatcher?.BeginInvokeShutdown(DispatcherPriority.Send);
+        watchdog.Dispose();
         worker.Join(TimeSpan.FromSeconds(2));
     }
 
@@ -326,6 +376,21 @@ internal sealed class InputRuntime : IDisposable
 
     [DllImport("user32", SetLastError = true)]
     private static extern bool RegisterRawInputDevices(RawDevice[] devices, uint count, uint size);
+
+    [DllImport("user32", SetLastError = true)]
+    private static extern bool RegisterHotKey(nint hwnd, int id, uint modifiers, uint key);
+
+    [DllImport("user32")]
+    private static extern bool UnregisterHotKey(nint hwnd, int id);
+
+    [DllImport("user32")]
+    private static extern int GetMessageTime();
+
+    [DllImport("wtsapi32", SetLastError = true)]
+    private static extern bool WTSRegisterSessionNotification(nint hwnd, int flags);
+
+    [DllImport("wtsapi32")]
+    private static extern bool WTSUnRegisterSessionNotification(nint hwnd);
 
     [DllImport("user32")]
     private static extern uint GetRawInputData(nint input, uint command, ref RawPacket packet, ref uint size, uint headerSize);

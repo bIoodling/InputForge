@@ -16,7 +16,7 @@ public sealed record MouseSettings(float Horizontal = 1, float Vertical = 1, flo
     float Acceleration = 0, Smoothing Filter = Smoothing.Exponential,
     ResponseCurve Curve = ResponseCurve.Linear, float Point1 = .25f, float Point2 = .75f,
     float Input1 = 1f / 3, float Input2 = 2f / 3, float Saturation = 1, float AntiDeadzone = 0,
-    bool InterpolatedKnots = false, float MaxOutput = 1);
+    bool InterpolatedKnots = false, float MaxOutput = 1, float NoiseCounts = 0);
 
 public readonly record struct ControllerState(uint Buttons, Vector2 Left, Vector2 Right, float LT, float RT)
 {
@@ -54,38 +54,42 @@ public static class DefaultBindings
 
 public sealed class Mapper
 {
+    public const float ReferenceCountsPerSecond = 800;
     private Vector2 filtered;
     public Vector2 MouseTarget { get; private set; }
 
     public void Reset() => filtered = MouseTarget = default;
 
     public ControllerState Update(IReadOnlyDictionary<Control, int> bindings, ReadOnlySpan<bool> held,
-        Vector2 delta, MouseSettings mouse, float seconds)
+        Vector2 delta, MouseSettings mouse, float seconds, float? sampleSeconds = null)
     {
         uint buttons = 0;
         foreach (var (control, input) in bindings)
-            if (input > 0 && input < held.Length && held[input])
+            if (input > 0 && input != EngineSafety.EmergencyKey && input < held.Length && held[input] && (uint)control <= (uint)Control.RightRight)
                 buttons |= 1u << (int)control;
 
         bool Has(Control control) => (buttons & (1u << (int)control)) != 0;
         float Axis(Control negative, Control positive) => (Has(positive) ? 1 : 0) - (Has(negative) ? 1 : 0);
 
         // A stalled output tick must not turn old motion into a fresh deflection.
-        var target = ProcessMouse(delta, mouse, seconds);
+        var target = ProcessMouse(delta, mouse, seconds, sampleSeconds);
         Vector2 left = new(Axis(Control.LeftLeft, Control.LeftRight), Axis(Control.LeftDown, Control.LeftUp));
         Vector2 right = new(Axis(Control.RightLeft, Control.RightRight), Axis(Control.RightDown, Control.RightUp));
         return new(buttons, Limit(left), Limit(target + right), Has(Control.LeftTrigger) ? 1 : 0, Has(Control.RightTrigger) ? 1 : 0);
     }
 
-    public Vector2 ProcessMouse(Vector2 delta, MouseSettings mouse, float seconds)
+    public Vector2 ProcessMouse(Vector2 delta, MouseSettings mouse, float seconds, float? sampleSeconds = null)
     {
-        if (!float.IsFinite(seconds) || seconds <= 0 || seconds > .1f)
+        if (!float.IsFinite(seconds) || seconds <= 0 ||
+            (!sampleSeconds.HasValue && seconds > .1f) || !float.IsFinite(delta.X) || !float.IsFinite(delta.Y) ||
+            !mouse.IsValid())
         {
             Reset();
             return default;
         }
-        var scaled = new Vector2(delta.X * mouse.Horizontal, -delta.Y * mouse.Vertical) *
-            (.004f / Math.Max(seconds, .001f));
+        // Decay state across a long pause, but preserve fresh timestamped motion.
+        if (seconds > .1f) Reset();
+        var scaled = ScaleMotion(delta, mouse, sampleSeconds ?? seconds);
         float magnitude = scaled.Length();
         var target = Vector2.Zero;
         if (magnitude > mouse.Deadzone)
@@ -105,12 +109,22 @@ public sealed class Mapper
             Smoothing.LowPass => .04f,
             _ => 0
         };
-        float weight = timeConstant == 0 ? 1 : 1 - MathF.Exp(-seconds / timeConstant);
+        float weight = timeConstant == 0 ? 1 : 1 - MathF.Exp(-Math.Min(seconds, .1f) / timeConstant);
         filtered = Vector2.Lerp(filtered, target, weight);
         if (target == Vector2.Zero && filtered.LengthSquared() < .000004f)
             filtered = Vector2.Zero;
 
         return filtered;
+    }
+
+    private static Vector2 ScaleMotion(Vector2 delta, MouseSettings mouse, float sampleSeconds)
+    {
+        if (!float.IsFinite(sampleSeconds) || sampleSeconds <= 0) return default;
+        delta = Vector2.Clamp(delta, new(-1e10f), new(1e10f));
+        float length = delta.Length();
+        if (length <= mouse.NoiseCounts) return default;
+        float scale = (1 - mouse.NoiseCounts / length) / (ReferenceCountsPerSecond * Math.Max(.001f, sampleSeconds));
+        return new Vector2(delta.X * mouse.Horizontal, -delta.Y * mouse.Vertical) * scale;
     }
 
     public static float EvaluateCurve(float x, MouseSettings mouse) => mouse.Curve switch

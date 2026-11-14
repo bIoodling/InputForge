@@ -2,7 +2,8 @@ using System.Numerics;
 
 namespace InputForge.Core;
 
-public readonly record struct MouseSample(float Seconds, Vector2 Raw, Vector2 Target, Vector2 Output);
+public readonly record struct MouseSample(float Seconds, Vector2 Raw, Vector2 Target, Vector2 Output,
+    Vector2 Sampled = default, float? WindowSeconds = null);
 
 public readonly record struct ReplayStats(int Samples, int Saturated, float Peak, float Mean)
 {
@@ -13,7 +14,8 @@ public readonly record struct ReplayStats(int Samples, int Saturated, float Peak
         float peak = 0, sum = 0;
         foreach (var sample in samples)
         {
-            float magnitude = mapper.ProcessMouse(sample.Raw, settings, sample.Seconds).Length();
+            float magnitude = mapper.ProcessMouse(sample.WindowSeconds.HasValue ? sample.Sampled : sample.Raw,
+                settings, sample.Seconds, sample.WindowSeconds).Length();
             if (magnitude >= .995f) saturated++;
             peak = Math.Max(peak, magnitude);
             sum += magnitude;
