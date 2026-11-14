@@ -7,12 +7,13 @@
  <Grid>
   <Grid.RowDefinitions><RowDefinition Height="56"/><RowDefinition Height="*"/></Grid.RowDefinitions>
   <Border Grid.Row="0" Background="{StaticResource Sidebar}" BorderBrush="{StaticResource Border}" BorderThickness="0,0,0,1">
-   <DockPanel Margin="19,0">
-    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+   <DockPanel Margin="18,0" LastChildFill="True">
+    <StackPanel x:Name="CaptionButtons" DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed" Margin="9,0,0,0"/>
+    <Button x:Name="Toggle" DockPanel.Dock="Right" Margin="12,0,0,0" VerticalAlignment="Center" AutomationProperties.Name="Toggle mapping"/>
+    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
      <Path Fill="{StaticResource Accent}" Data="M 5,0 L 19,0 15,5 8,5 6,9 14,9 10,14 5,14 1,20 0,11 Z" Margin="0,0,10,0"/>
      <TextBlock Text="InputForge" FontWeight="SemiBold" FontSize="15" VerticalAlignment="Center"/>
     </StackPanel>
-    <Button x:Name="Toggle" DockPanel.Dock="Right" Margin="12,0,0,0" VerticalAlignment="Center" AutomationProperties.Name="Toggle mapping"/>
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
      <TextBlock x:Name="ProfileLabel" Margin="0,0,16,0"/>
      <Ellipse x:Name="ConnectionDot" Width="6" Height="6" VerticalAlignment="Center" Margin="0,0,7,0"/>

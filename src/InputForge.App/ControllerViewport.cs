@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -12,19 +13,23 @@ namespace InputForge.App;
 internal sealed class ControllerViewport : Grid
 {
     private sealed record Part(GeometryModel3D Model, Material Idle, Material Selected,
-        Material Active, TranslateTransform3D Offset, Point3D Origin);
+        Material Active, TranslateTransform3D Offset, Point3D Origin, AxisAngleRotation3D? Tilt);
 
     private readonly Viewport3D viewport = new() { ClipToBounds = true };
     private readonly PerspectiveCamera camera = new() { FieldOfView = 37, NearPlaneDistance = .1, FarPlaneDistance = 60 };
     private readonly Model3DGroup models = new();
     private readonly Dictionary<GeometryModel3D, Control> hits = new();
     private readonly Dictionary<Control, List<Part>> parts = new();
-    private readonly DiffuseMaterial shell = Matte(39, 39, 42);
-    private readonly DiffuseMaterial grip = Matte(27, 27, 29);
-    private readonly DiffuseMaterial metal = Matte(67, 67, 72);
-    private double yaw, pitch, distance;
+    private readonly Material shell = Finish(49, 49, 53, 24, 25);
+    private readonly Material grip = Finish(30, 30, 32, 8, 12);
+    private readonly Material metal = Finish(66, 66, 72, 48, 38);
+    private OrbitPose pose = OrbitPose.Front, target = OrbitPose.Front;
+    private bool orbiting;
+    private bool paused;
+    private long lastFrame;
     private Point start, last;
     private bool dragging;
+    private int clicks;
     private Control? selected;
 
     public event Action<Control>? ControlSelected;
@@ -36,22 +41,25 @@ internal sealed class ControllerViewport : Grid
         System.Windows.Automation.AutomationProperties.SetName(this, "3D controller camera. Use the arrow keys to orbit and plus or minus to zoom.");
         Children.Add(viewport);
         viewport.Camera = camera;
-        models.Children.Add(new AmbientLight(Color.FromRgb(126, 126, 126)));
-        models.Children.Add(new DirectionalLight(Color.FromRgb(175, 175, 175), new Vector3D(.35, -.65, -.8)));
-        models.Children.Add(new DirectionalLight(Color.FromRgb(88, 88, 88), new Vector3D(-.8, .2, .65)));
+        models.Children.Add(new AmbientLight(Color.FromRgb(168, 168, 168)));
+        models.Children.Add(new DirectionalLight(Color.FromRgb(215, 215, 215), new Vector3D(.32, -.55, -.8)));
+        models.Children.Add(new DirectionalLight(Color.FromRgb(133, 133, 133), new Vector3D(-.7, -.22, .65)));
+        models.Children.Add(new DirectionalLight(Color.FromRgb(68, 68, 68), new Vector3D(-.5, .8, -.3)));
         viewport.Children.Add(new ModelVisual3D { Content = models });
         SizeChanged += (_, _) => UpdateCamera();
+        IsVisibleChanged += (_, _) => { if (!IsVisible) StopOrbit(); else if (pose != target) StartOrbit(); };
+        Unloaded += (_, _) => StopOrbit();
         BuildModel();
         Reset();
     }
 
     private void BuildModel()
     {
-        Add(new(0, .15, -.10), new(1.80, .93, .44), shell);
-        Add(new(0, .31, .12), new(1.64, .73, .32), shell);
-        Add(new(-1.29, -.41, -.07), new(.61, 1.04, .43), grip, angle: -22);
-        Add(new(1.29, -.41, -.07), new(.61, 1.04, .43), grip, angle: 22);
-        Add(new(0, -.16, -.44), new(.63, .46, .17), shell);
+        models.Children.Add(ControllerShell.Loft([(.84, -.48), (.93, -.42), (1, -.24), (1, -.045)], grip));
+        models.Children.Add(ControllerShell.Cap(.84, -.48, false, grip));
+        models.Children.Add(ControllerShell.Loft([(1, -.045), (1, -.006)], Matte(19, 19, 20)));
+        models.Children.Add(ControllerShell.Loft([(1, -.006), (1, .15), (.98, .25), (.94, .34), (.89, .39)], shell));
+        models.Children.Add(ControllerShell.Cap(.89, .39, true, shell));
         Add(new(0, .61, .41), new(.14, .14, .035), metal, label: "×");
         Add(new(0, .17, .46), new(.07, .07, .023), grip);
 
@@ -68,25 +76,59 @@ internal sealed class ControllerViewport : Grid
             (Control.LeftClick,-1.10,.38), (Control.RightClick,.52,-.29)
         })
         {
-            Add(new(x,y,.42), new(.27,.27,.06), metal);
-            Add(new(x,y,.51), new(.178,.178,.16), grip, id);
-            Add(new(x,y,.67), new(.178,.178,.052), shell, id);
+            Add(new(x,y,.40), new(.225,.225,.045), metal);
+            Add(new(x,y,.49), new(.100,.100,.127), metal, id);
+            Add(new(x,y,.59), new(.167,.167,.061), grip, id);
+            Add(new(x,y,.628), new(.130,.130,.035), shell, id);
         }
 
-        Add(new(-.55,-.29,.43), new(.28,.28,.065), metal, longitude: 8);
-        Add(new(-.55,-.155,.49), new(.10,.10,.035), metal, Control.Up, longitude: 8);
-        Add(new(-.55,-.425,.49), new(.10,.10,.035), metal, Control.Down, longitude: 8);
-        Add(new(-.685,-.29,.49), new(.10,.10,.035), metal, Control.Left, longitude: 8);
-        Add(new(-.415,-.29,.49), new(.10,.10,.035), metal, Control.Right, longitude: 8);
+        Add(new(-.55,-.29,.397), new(.266,.266,.026), grip);
+        AddDpad();
 
-        Add(new(-1.12,.91,.07), new(.48,.16,.24), shell, Control.LeftBumper, -7);
-        Add(new(1.12,.91,.07), new(.48,.16,.24), shell, Control.RightBumper, 7);
-        Add(new(-1.15,.84,-.36), new(.33,.31,.27), shell, Control.LeftTrigger);
-        Add(new(1.15,.84,-.36), new(.33,.31,.27), shell, Control.RightTrigger);
-        Add(new(-.93,-.20,-.52), new(.31,.085,.06), metal, angle: 31);
-        Add(new(-.77,.02,-.51), new(.24,.075,.06), metal, angle: 31);
-        Add(new(.93,-.20,-.52), new(.31,.085,.06), metal, angle: -31);
-        Add(new(.77,.02,-.51), new(.24,.075,.06), metal, angle: -31);
+        Add(new(-1.13,.79,.13), new(.43,.115,.20), shell, Control.LeftBumper, 12);
+        Add(new(1.13,.79,.13), new(.43,.115,.20), shell, Control.RightBumper, -12);
+        Add(new(-1.15,.77,-.37), new(.275,.225,.235), shell, Control.LeftTrigger, 14);
+        Add(new(1.15,.77,-.37), new(.275,.225,.235), shell, Control.RightTrigger, -14);
+        Add(new(-.99,-.29,-.52), new(.34,.077,.046), metal, angle: 31);
+        Add(new(-.75,-.05,-.51), new(.23,.068,.04), metal, angle: 29);
+        Add(new(.99,-.29,-.52), new(.34,.077,.046), metal, angle: -31);
+        Add(new(.75,-.05,-.51), new(.23,.068,.04), metal, angle: -29);
+        for (int i = -1; i <= 1; i++) Add(new(i * .068, .064, .391), new(.016,.010,.006), metal);
+        for (int i = -1; i <= 1; i++) Add(new(i * .095, -.53, -.487), new(.023,.023,.012), metal);
+    }
+
+    private void AddDpad()
+    {
+        var directions = new[] { Control.Right, Control.Up, Control.Left, Control.Down };
+        for (int i = 0; i < 4; i++)
+        {
+            var mesh = new MeshGeometry3D();
+            mesh.Positions.Add(new(.0, .0, .015));
+            double middle = Math.PI * i / 2;
+            foreach (double angle in new[] { middle - Math.PI / 4, middle - Math.PI / 8, middle, middle + Math.PI / 8, middle + Math.PI / 4 })
+                mesh.Positions.Add(new(.243 * Math.Cos(angle), .243 * Math.Sin(angle), -.035));
+            for (int vertex = 1; vertex < 5; vertex++)
+            {
+                mesh.TriangleIndices.Add(0);
+                mesh.TriangleIndices.Add(vertex);
+                mesh.TriangleIndices.Add(vertex + 1);
+            }
+            mesh.Freeze();
+            var origin = new Point3D(-.55, -.29, .445);
+            var move = new TranslateTransform3D(origin.X, origin.Y, origin.Z);
+            var model = new GeometryModel3D(mesh, metal) { Transform = move };
+            models.Children.Add(model);
+            Track(directions[i], model, metal, move, origin, null);
+        }
+    }
+
+    private static Material Finish(byte r, byte g, byte b, byte sheen, double power)
+    {
+        var material = new MaterialGroup();
+        material.Children.Add(Matte(r, g, b));
+        material.Children.Add(new SpecularMaterial(new SolidColorBrush(Color.FromRgb(sheen, sheen, sheen)), power));
+        material.Freeze();
+        return material;
     }
 
     private static DiffuseMaterial Matte(byte r, byte g, byte b)
@@ -103,16 +145,25 @@ internal sealed class ControllerViewport : Grid
         var transform = new Transform3DGroup();
         transform.Children.Add(new ScaleTransform3D(size.X, size.Y, size.Z));
         if (angle != 0) transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0,0,1), angle)));
+        AxisAngleRotation3D? tilt = null;
+        if (control is Control.LeftTrigger or Control.RightTrigger)
+        {
+            tilt = new AxisAngleRotation3D(new(1, 0, 0), 0);
+            transform.Children.Add(new RotateTransform3D(tilt, 0, .13, 0));
+        }
         transform.Children.Add(offset);
         var model = new GeometryModel3D(Mesh(longitude), material) { Transform = transform };
         models.Children.Add(model);
-        if (control is { } id)
-        {
-            hits.Add(model, id);
-            if (!parts.TryGetValue(id, out var list)) parts.Add(id, list = []);
-            list.Add(new Part(model, material, Matte(111, 32, 39), Matte(220, 38, 38), offset, position));
-        }
-        if (label is not null) Label(position, size, label, control);
+        if (control is { } id) Track(id, model, material, offset, position, tilt);
+        if (label is not null) Label(size, label, control, offset);
+    }
+
+    private void Track(Control id, GeometryModel3D model, Material material, TranslateTransform3D offset,
+        Point3D position, AxisAngleRotation3D? tilt)
+    {
+        hits.Add(model, id);
+        if (!parts.TryGetValue(id, out var list)) parts.Add(id, list = []);
+        list.Add(new Part(model, material, Finish(92, 40, 44, 20, 25), Finish(156, 32, 35, 32, 25), offset, position, tilt));
     }
 
     private static readonly Dictionary<int, MeshGeometry3D> Meshes = new();
@@ -145,7 +196,7 @@ internal sealed class ControllerViewport : Grid
         return mesh;
     }
 
-    private void Label(Point3D center, Vector3D size, string label, Control? control)
+    private void Label(Vector3D size, string label, Control? control, TranslateTransform3D offset)
     {
         var drawing = new DrawingGroup();
         using (DrawingContext dc = drawing.Open())
@@ -157,19 +208,18 @@ internal sealed class ControllerViewport : Grid
         }
         var material = new EmissiveMaterial(new DrawingBrush(drawing));
         material.Freeze();
-        double d = size.X * .66, z = center.Z + size.Z + .002;
+        double d = size.X * .66, z = size.Z + .002;
         var face = new MeshGeometry3D
         {
             Positions = new Point3DCollection
             {
-                new(center.X-d,center.Y-d,z), new(center.X+d,center.Y-d,z),
-                new(center.X+d,center.Y+d,z), new(center.X-d,center.Y+d,z)
+                new(-d,-d,z), new(d,-d,z), new(d,d,z), new(-d,d,z)
             },
             TextureCoordinates = new PointCollection { new(0,1), new(1,1), new(1,0), new(0,0) },
             TriangleIndices = new Int32Collection { 0,1,2,0,2,3 }
         };
         face.Freeze();
-        var model = new GeometryModel3D(face, material);
+        var model = new GeometryModel3D(face, material) { Transform = offset };
         models.Children.Add(model);
         if (control is { } id) hits.Add(model,id);
     }
@@ -179,31 +229,72 @@ internal sealed class ControllerViewport : Grid
         selected = selection;
         foreach (var (id, group) in parts)
         {
-            bool active = state.IsPressed(id);
-            var stick = id == Control.LeftClick ? state.Left : id == Control.RightClick ? state.Right : default;
-            float travel = id == Control.LeftTrigger ? state.LT : id == Control.RightTrigger ? state.RT : 0;
+            var motion = PartMotion.From(id, state);
             foreach (Part part in group)
             {
-                var material = active ? part.Active : selected == id ? part.Selected : part.Idle;
+                var material = motion.Active ? part.Active : selected == id ? part.Selected : part.Idle;
                 if (part.Model.Material != material) part.Model.Material = material;
-                double x = part.Origin.X + stick.X * .075;
-                double y = part.Origin.Y + stick.Y * .075 - travel * .09;
+                double stickTravel = Math.Max(0, part.Origin.Z - .40) * .34;
+                double x = part.Origin.X + motion.Stick.X * stickTravel;
+                double y = part.Origin.Y + motion.Stick.Y * stickTravel;
+                double z = part.Origin.Z - (part.Tilt is null ? motion.Travel * .026 : 0);
                 if (part.Offset.OffsetX != x) part.Offset.OffsetX = x;
                 if (part.Offset.OffsetY != y) part.Offset.OffsetY = y;
+                if (part.Offset.OffsetZ != z) part.Offset.OffsetZ = z;
+                if (part.Tilt is { } tilt && tilt.Angle != motion.Travel * 19) tilt.Angle = motion.Travel * 19;
             }
         }
     }
 
-    public void Reset() { yaw = -.17; pitch = .21; distance = 7.4; UpdateCamera(); }
-    public void Rear() { yaw = Math.PI; pitch = .14; UpdateCamera(); }
+    public void Reset() => SetPose(OrbitPose.Front);
+    public void Rear() => SetPose(OrbitPose.Rear with { Distance = target.Distance });
+
+    public void PauseOrbit() { paused = true; StopOrbit(); }
+    public void ResumeOrbit() { paused = false; if (IsVisible && pose != target) StartOrbit(); }
+
+    public void StopOrbit()
+    {
+        if (!orbiting) return;
+        CompositionTarget.Rendering -= RenderOrbit;
+        orbiting = false;
+    }
+
+    private void SetPose(OrbitPose next)
+    {
+        target = next;
+        if (IsVisible && SystemParameters.ClientAreaAnimation) StartOrbit();
+        else { pose = target; UpdateCamera(); }
+    }
+
+    private void StartOrbit()
+    {
+        if (orbiting || paused) return;
+        lastFrame = Stopwatch.GetTimestamp();
+        CompositionTarget.Rendering += RenderOrbit;
+        orbiting = true;
+    }
+
+    private void RenderOrbit(object? sender, EventArgs e)
+    {
+        long now = Stopwatch.GetTimestamp();
+        pose = pose.Interpolate(target, 1 - Math.Exp(-27 * Stopwatch.GetElapsedTime(lastFrame, now).TotalSeconds));
+        lastFrame = now;
+        if (Math.Abs(Math.IEEERemainder(pose.Yaw-target.Yaw, 2*Math.PI)) < .001 &&
+            Math.Abs(pose.Pitch-target.Pitch) < .001 && Math.Abs(pose.Distance-target.Distance) < .003)
+        {
+            pose = target;
+            StopOrbit();
+        }
+        UpdateCamera();
+    }
 
     private void UpdateCamera()
     {
         double aspect = ActualHeight > 0 ? ActualWidth / ActualHeight : 1.5;
-        double d = distance * Math.Max(1, aspect / 1.65);
-        camera.Position = new Point3D(d * Math.Sin(yaw) * Math.Cos(pitch),
-            d * Math.Sin(pitch), d * Math.Cos(yaw) * Math.Cos(pitch));
-        camera.LookDirection = -((Vector3D)camera.Position);
+        var position = pose.Position((float)Math.Max(1, aspect / 1.68));
+        var anchor = new Point3D(0, -.15, 0);
+        camera.Position = anchor + new Vector3D(position.X, position.Y, position.Z);
+        camera.LookDirection = anchor - camera.Position;
         camera.UpDirection = new Vector3D(0,1,0);
     }
 
@@ -213,6 +304,7 @@ internal sealed class ControllerViewport : Grid
         Focus();
         start = last = e.GetPosition(this);
         dragging = false;
+        clicks = e.ClickCount;
         CaptureMouse();
         e.Handled = true;
     }
@@ -223,7 +315,7 @@ internal sealed class ControllerViewport : Grid
         if (!IsMouseCaptured || e.LeftButton != MouseButtonState.Pressed) return;
         Point now = e.GetPosition(this);
         dragging |= (now - start).Length >= 5;
-        if (dragging) Orbit((now.X-last.X)*.009, (now.Y-last.Y)*.009);
+        if (dragging) SetPose(target.Drag(now.X-last.X, now.Y-last.Y));
         last = now;
     }
 
@@ -233,16 +325,25 @@ internal sealed class ControllerViewport : Grid
         if (!IsMouseCaptured) return;
         ReleaseMouseCapture();
         Point position = e.GetPosition(viewport);
-        if (!dragging && (e.GetPosition(this) - start).Length < 5 &&
-            VisualTreeHelper.HitTest(viewport, position) is RayMeshGeometry3DHitTestResult result &&
-            result.ModelHit is GeometryModel3D model && hits.TryGetValue(model, out Control control))
-            ControlSelected?.Invoke(control);
+        if (!dragging && (e.GetPosition(this) - start).Length < 5)
+        {
+            RayMeshGeometry3DHitTestResult? hit = null;
+            VisualTreeHelper.HitTest(viewport, null, result =>
+            {
+                if (result is not RayMeshGeometry3DHitTestResult ray) return HitTestResultBehavior.Continue;
+                if (hit is null || ray.DistanceToRayOrigin < hit.DistanceToRayOrigin) hit = ray;
+                return HitTestResultBehavior.Continue;
+            }, new PointHitTestParameters(position));
+            if (hit?.ModelHit is GeometryModel3D part && hits.TryGetValue(part, out Control control))
+                ControlSelected?.Invoke(control);
+            else if (clicks == 2 && hit is null) Reset();
+        }
         e.Handled = true;
     }
 
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
-        Zoom(e.Delta / 120.0);
+        SetPose(target.Zoom(e.Delta / 120.0));
         e.Handled = true;
     }
 
@@ -250,27 +351,15 @@ internal sealed class ControllerViewport : Grid
     {
         switch (e.Key)
         {
-            case Key.Left: Orbit(-.12, 0); break;
-            case Key.Right: Orbit(.12, 0); break;
-            case Key.Up: Orbit(0, .12); break;
-            case Key.Down: Orbit(0, -.12); break;
-            case Key.Add: case Key.OemPlus: Zoom(1); break;
-            case Key.Subtract: case Key.OemMinus: Zoom(-1); break;
+            case Key.Left: SetPose(target.Drag(-14, 0)); break;
+            case Key.Right: SetPose(target.Drag(14, 0)); break;
+            case Key.Up: SetPose(target.Drag(0, -14)); break;
+            case Key.Down: SetPose(target.Drag(0, 14)); break;
+            case Key.Add: case Key.OemPlus: SetPose(target.Zoom(1)); break;
+            case Key.Subtract: case Key.OemMinus: SetPose(target.Zoom(-1)); break;
             default: return;
         }
         e.Handled = true;
     }
 
-    private void Orbit(double x, double y)
-    {
-        yaw += x;
-        pitch = Math.Clamp(pitch+y, -1.50, 1.50);
-        UpdateCamera();
-    }
-
-    private void Zoom(double steps)
-    {
-        distance = Math.Clamp(distance * Math.Pow(.88, steps), 5.4, 13);
-        UpdateCamera();
-    }
 }

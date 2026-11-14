@@ -7,6 +7,9 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using System.Windows.Interop;
+using System.Windows.Shell;
+using System.Runtime.InteropServices;
 using InputForge.Core;
 using Microsoft.Win32;
 using Control = InputForge.Core.Control;
@@ -28,6 +31,8 @@ public partial class MainWindow : Window
     private bool rebinding;
     private TextBlock? applicationStatus, signals, binding, selection, notice;
     private Button? rebind;
+    private Button? localTest;
+    private TextBlock? localTestLabel;
     private ComboBox? controlPicker;
     private ComboBox? groupPicker;
     private string page = "Dashboard";
@@ -40,9 +45,12 @@ public partial class MainWindow : Window
         InitializeComponent();
         preferences = LoadPreferences();
         runtime = new InputRuntime(Config());
-        foreach (string name in new[] { "Dashboard", "Controller", "Mouse", "Profiles", "Testing Lab", "Settings" })
+        foreach (var (name, icon) in new[] { ("Dashboard", "\uE80F"), ("Controller", "\uE7FC"), ("Mouse", "\uE962"),
+            ("Profiles", "\uE8B7"), ("Testing Lab", "\uE9D9"), ("Settings", "\uE713") })
         {
             var button = ButtonFor(name, () => Navigate(name));
+            button.Content = Row(new TextBlock { Text = icon, FontFamily = new FontFamily("Segoe MDL2 Assets"), Width = 18 }, new TextBlock { Text = name });
+            System.Windows.Automation.AutomationProperties.SetName(button, name);
             button.HorizontalContentAlignment = HorizontalAlignment.Left;
             button.Margin = new Thickness(0,0,0,4);
             nav.Add(name, button);
@@ -55,13 +63,13 @@ public partial class MainWindow : Window
         };
         Toggle.Click += (_, _) => { enabled = !enabled; Apply(); };
         PreviewKeyDown += HandleKey;
-        Deactivated += (_, _) => { if (rebinding) CancelRebind(); };
+        Deactivated += (_, _) => { if (rebinding) { CancelRebind(); Apply(); } };
         refresh = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(16) };
         refresh.Tick += (_, _) => RefreshOutput();
         StateChanged += (_, _) =>
         {
-            if (WindowState == WindowState.Minimized) refresh.Stop();
-            else { RefreshOutput(); refresh.Start(); }
+            if (WindowState == WindowState.Minimized) { refresh.Stop(); model.PauseOrbit(); }
+            else { model.ResumeOrbit(); RefreshOutput(); refresh.Start(); }
         };
         Navigate("Dashboard");
         refresh.Start();
@@ -76,7 +84,7 @@ public partial class MainWindow : Window
                 var stored = JsonSerializer.Deserialize<Preferences>(File.ReadAllText(SettingsPath));
                 if (stored is not null && stored.Application is not null && stored.Mouse is not null &&
                     stored.Bindings is not null && stored.Bindings.Count == DefaultBindings.Create().Count &&
-                    stored.Bindings.All(pair => Enum.IsDefined(pair.Key) && pair.Value is > 0 and < 261) &&
+                    stored.Bindings.All(pair => Enum.IsDefined(pair.Key) && pair.Value is >= 0 and < 261) &&
                     ValidMouse(stored.Mouse))
                     return stored;
                 persistenceError = "Saved preferences were invalid. Defaults are loaded.";
@@ -111,12 +119,14 @@ public partial class MainWindow : Window
         }
     }
 
-    private RuntimeConfig Config() => new(enabled, testing, preferences.Application, preferences.Bindings, preferences.Mouse);
+    private RuntimeConfig Config() => new(!rebinding && enabled, !rebinding && testing, preferences.Application, preferences.Bindings, preferences.Mouse);
     private void Apply()
     {
         runtime.Configure(Config());
         Toggle.Content = enabled ? "Mapping on" : "Mapping off";
         Toggle.Background = Brush(enabled ? "Active" : "Elevated");
+        if (localTest is not null) localTest.Content = testing ? "Stop input test" : "Test inputs";
+        if (localTestLabel is not null) localTestLabel.Text = testing ? "Local test" : "";
         ProfileLabel.Text = string.IsNullOrEmpty(preferences.Application)
             ? "Default profile" : System.IO.Path.GetFileNameWithoutExtension(preferences.Application);
         last = null;
@@ -140,7 +150,7 @@ public partial class MainWindow : Window
 
     private void Navigate(string name)
     {
-        if (testing && name != "Testing Lab") testing = false;
+        if (testing && name is not ("Dashboard" or "Controller" or "Testing Lab")) testing = false;
         CancelRebind();
         if (model.Parent is Panel oldParent) oldParent.Children.Remove(model);
         page = name;
@@ -148,6 +158,9 @@ public partial class MainWindow : Window
         controlPicker = null;
         groupPicker = null;
         rebind = null;
+        mouseChoices = null;
+        localTest = null;
+        localTestLabel = null;
         foreach (var (key, item) in nav)
         {
             item.Background = Brush(key == page ? "Active" : "Sidebar");
@@ -169,7 +182,7 @@ public partial class MainWindow : Window
     private DockPanel Frame(string title)
     {
         var layout = new DockPanel();
-        var heading = Text(title, 19);
+        var heading = Text(title, 17);
         heading.FontWeight = FontWeights.SemiBold;
         heading.Margin = new Thickness(0,0,0,14);
         DockPanel.SetDock(heading, Dock.Top);
@@ -187,21 +200,28 @@ public partial class MainWindow : Window
     {
         var scene = new Grid();
         scene.Children.Add(model);
+        var bottom = new DockPanel { VerticalAlignment = VerticalAlignment.Bottom };
         var views = Row(ButtonFor("Rear view", model.Rear), ButtonFor("Reset view", model.Reset));
         views.HorizontalAlignment = HorizontalAlignment.Right;
-        views.VerticalAlignment = VerticalAlignment.Bottom;
-        scene.Children.Add(views);
+        DockPanel.SetDock(views, Dock.Right);
+        bottom.Children.Add(views);
+        localTest = ButtonFor("Test inputs", () => { testing = !testing; Apply(); });
+        localTestLabel = Text("", 11, "Muted");
+        bottom.Children.Add(Row(localTest, localTestLabel));
+        scene.Children.Add(bottom);
         return Surface(scene, 8);
     }
 
     private DockPanel Dashboard()
     {
         var frame = Frame("Dashboard");
-        var details = new Grid { Margin = new Thickness(0,10,0,0) };
+        var details = new Grid { Margin = new Thickness(0,14,0,0) };
         details.ColumnDefinitions.Add(new ColumnDefinition());
         details.ColumnDefinitions.Add(new ColumnDefinition());
         details.ColumnDefinitions.Add(new ColumnDefinition());
         var app = Column(Text("Active application", 11, "Muted"), applicationStatus = Text("Inactive"));
+        applicationStatus.TextTrimming = TextTrimming.CharacterEllipsis;
+        applicationStatus.TextWrapping = TextWrapping.NoWrap;
         details.Children.Add(app);
         var horizontal = SliderFor("Horizontal", .1, 4, preferences.Mouse.Horizontal, x => ChangeMouse(preferences.Mouse with { Horizontal = x }));
         var vertical = SliderFor("Vertical", .1, 4, preferences.Mouse.Vertical, x => ChangeMouse(preferences.Mouse with { Vertical = x }));
@@ -220,12 +240,13 @@ public partial class MainWindow : Window
         var frame = Frame("Controller");
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition());
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(214) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(232) });
         grid.Children.Add(Scene());
         binding = Text("", 14);
         selection = Text("", 15);
         rebind = ButtonFor("Rebind", BeginRebind);
         var reset = ButtonFor("Reset", () => SetBinding(DefaultBindings.Create()[selected]));
+        var clear = ButtonFor("Clear", () => SetBinding(0));
         groupPicker = Combo("Binding group", Enum.GetValues<BindingGroup>(), GroupFor(selected), group =>
         {
             var choices = ControlsIn(group);
@@ -234,11 +255,13 @@ public partial class MainWindow : Window
         });
         controlPicker = Combo("Controller control", ControlsIn(GroupFor(selected)), selected, SelectControl);
         var controls = Column(Text("Bindings", 11, "Muted"), groupPicker, controlPicker, selection, binding,
-            Row(rebind, reset),
-            Row(ButtonFor("Left mouse", () => BindMouse(256)), ButtonFor("Right mouse", () => BindMouse(257))),
-            Row(ButtonFor("Middle", () => BindMouse(258)), ButtonFor("Mouse 4", () => BindMouse(259)), ButtonFor("Mouse 5", () => BindMouse(260))),
+            Row(rebind, clear, reset),
+            mouseChoices = Column(
+                Row(ButtonFor("Left mouse", () => BindMouse(256)), ButtonFor("Right mouse", () => BindMouse(257))),
+                Row(ButtonFor("Middle", () => BindMouse(258)), ButtonFor("Mouse 4", () => BindMouse(259)), ButtonFor("Mouse 5", () => BindMouse(260)))),
             notice = Text("", 11, "Muted"));
-        var right = Surface(controls, 12);
+        mouseChoices.Visibility = Visibility.Collapsed;
+        var right = Surface(controls, 13);
         right.Margin = new Thickness(12,0,0,0);
         Grid.SetColumn(right,1);
         grid.Children.Add(right);
@@ -249,7 +272,7 @@ public partial class MainWindow : Window
 
     private void SelectControl(Control id)
     {
-        if (id != selected) CancelRebind();
+        if (id != selected && rebinding) { CancelRebind(); Apply(); }
         selected = id;
         if (groupPicker is not null && !Equals(groupPicker.SelectedItem, GroupFor(id)))
             groupPicker.SelectedItem = GroupFor(id);
@@ -272,18 +295,23 @@ public partial class MainWindow : Window
 
     private static Control[] ControlsIn(BindingGroup group) => Enum.GetValues<Control>().Where(id => GroupFor(id) == group).ToArray();
 
+    private StackPanel? mouseChoices;
+
     private void BeginRebind()
     {
-        if (rebinding) { CancelRebind(); return; }
+        if (rebinding) { CancelRebind(); Apply(); return; }
         rebinding = true;
         rebind!.Content = "Cancel";
+        mouseChoices!.Visibility = Visibility.Visible;
         notice!.Text = "Press a keyboard key or choose a mouse button.";
+        Apply();
     }
 
     private void CancelRebind()
     {
         rebinding = false;
         if (rebind is not null) rebind.Content = "Rebind";
+        if (mouseChoices is not null) mouseChoices.Visibility = Visibility.Collapsed;
         if (notice is not null) notice.Text = persistenceError ?? "";
     }
 
@@ -310,7 +338,7 @@ public partial class MainWindow : Window
     {
         if (e.Key == Key.Escape)
         {
-            if (rebinding) CancelRebind();
+            if (rebinding) { CancelRebind(); Apply(); }
             else { enabled = testing = false; if (page == "Testing Lab") Navigate(page); else Apply(); }
             e.Handled = true;
             return;
@@ -441,7 +469,7 @@ public partial class MainWindow : Window
 
     private static string Display(Control control) =>
         System.Text.RegularExpressions.Regex.Replace(control.ToString(), "([a-z])([A-Z])", "$1 $2");
-    private static string DisplayInput(int value) => value >= 256
+    private static string DisplayInput(int value) => value == 0 ? "Unbound" : value >= 256
         ? new[] { "Left mouse", "Right mouse", "Middle mouse", "Mouse 4", "Mouse 5" }[value - 256]
         : KeyInterop.KeyFromVirtualKey(value).ToString();
 
@@ -524,4 +552,59 @@ public partial class MainWindow : Window
         runtime.Dispose();
         base.OnClosed(e);
     }
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        nint hwnd = new WindowInteropHelper(this).Handle;
+        int enabled = 1;
+        // Windows 11 exposes both dark mode and an explicit caption colour.
+        // Explicit colours keep the caption dark even with the system light theme.
+        if (!SystemParameters.HighContrast && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            DwmSetWindowAttribute(hwnd, 20, ref enabled, sizeof(int));
+            int caption = 0x000C0B0B, text = 0x00F5F4F4;
+            if (DwmSetWindowAttribute(hwnd, 35, ref caption, sizeof(int)) == 0)
+            {
+                DwmSetWindowAttribute(hwnd, 36, ref text, sizeof(int));
+                return;
+            }
+        }
+        if (SystemParameters.HighContrast) return;
+
+        // WindowChrome retains native move, double-click, snap and resize hit regions.
+        WindowChrome.SetWindowChrome(this, new WindowChrome
+        {
+            CaptionHeight = 47, ResizeBorderThickness = new Thickness(6), GlassFrameThickness = new Thickness(0),
+            UseAeroCaptionButtons = false
+        });
+        WindowStyle = WindowStyle.None;
+        CaptionButtons.Visibility = Visibility.Visible;
+        var minimize = ButtonFor("−", () => SystemCommands.MinimizeWindow(this));
+        var maximize = ButtonFor("□", () =>
+        {
+            if (WindowState == WindowState.Maximized) SystemCommands.RestoreWindow(this);
+            else SystemCommands.MaximizeWindow(this);
+        });
+        var close = ButtonFor("×", () => SystemCommands.CloseWindow(this));
+        foreach (var (button, name) in new[] { (minimize, "Minimize"), (maximize, "Maximize"), (close, "Close") })
+        {
+            button.Background = Brush("Sidebar");
+            button.ToolTip = name;
+            System.Windows.Automation.AutomationProperties.SetName(button, name);
+            WindowChrome.SetIsHitTestVisibleInChrome(button, true);
+            CaptionButtons.Children.Add(button);
+        }
+        WindowChrome.SetIsHitTestVisibleInChrome(Toggle, true);
+        StateChanged += (_, _) =>
+        {
+            bool isMaximized = WindowState == WindowState.Maximized;
+            maximize.Content = isMaximized ? "❐" : "□";
+            maximize.ToolTip = isMaximized ? "Restore" : "Maximize";
+            System.Windows.Automation.AutomationProperties.SetName(maximize, (string)maximize.ToolTip);
+        };
+    }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref int value, int size);
 }

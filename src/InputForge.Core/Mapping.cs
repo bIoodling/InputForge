@@ -59,7 +59,7 @@ public sealed class Mapper
     {
         uint buttons = 0;
         foreach (var (control, input) in bindings)
-            if ((uint)input < (uint)held.Length && held[input])
+            if (input > 0 && input < held.Length && held[input])
                 buttons |= 1u << (int)control;
 
         bool Has(Control control) => (buttons & (1u << (int)control)) != 0;

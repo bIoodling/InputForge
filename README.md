@@ -18,6 +18,8 @@ dotnet test InputForge.slnx -c Release --no-build
 ## Try the Windows interface
 
 - On Controller, drag the model to orbit, use the wheel to zoom, or click a control to select its binding.
+  Double-click the background to reset the view. Test inputs on Dashboard or Controller
+  to visualise real mappings without a virtual device.
 - On Mouse, use the Sensitivity, Filtering and Response Curve tabs.
 - In Testing Lab, start a local test to use real keyboard and mouse input without creating a virtual device.
 - For virtual Xbox 360 output, separately install [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0).
@@ -29,6 +31,9 @@ rendering fallback. The viewport consumes output snapshots from the Raw Input wo
 UI polling while minimized. Mapping is disabled on startup, and capture is scoped to the chosen
 foreground executable or the explicitly enabled local test. The application stores preferences in
 `%LOCALAPPDATA%\InputForge` and makes no network requests during normal use.
+
+The geometry is an original Elite-inspired model with a contoured case, shell seam, faceted D-pad
+and rear paddles. It is an interpretation of the hardware, with no manufacturer mesh or textures.
 
 There are currently no GitHub release binaries. Test the native layout, hit targets and keyboard
 navigation at different Windows scaling settings before relying on this interface. Driver

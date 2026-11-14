@@ -4,15 +4,15 @@
  StartupUri="MainWindow.xaml">
  <Application.Resources>
   <SolidColorBrush x:Key="Background" Color="#080808"/>
-  <SolidColorBrush x:Key="Sidebar" Color="#0C0C0D"/>
+  <SolidColorBrush x:Key="Sidebar" Color="#0B0B0C"/>
   <SolidColorBrush x:Key="Panel" Color="#111113"/>
-  <SolidColorBrush x:Key="Elevated" Color="#171719"/>
-  <SolidColorBrush x:Key="Border" Color="#222225"/>
-  <SolidColorBrush x:Key="Text" Color="#F2F2F2"/>
-  <SolidColorBrush x:Key="Muted" Color="#77777F"/>
+  <SolidColorBrush x:Key="Elevated" Color="#18181B"/>
+  <SolidColorBrush x:Key="Border" Color="#242427"/>
+  <SolidColorBrush x:Key="Text" Color="#F4F4F5"/>
+  <SolidColorBrush x:Key="Muted" Color="#85858D"/>
   <SolidColorBrush x:Key="Accent" Color="#DC2626"/>
   <SolidColorBrush x:Key="HoverAccent" Color="#EF4444"/>
-  <SolidColorBrush x:Key="Active" Color="#2A1013"/>
+  <SolidColorBrush x:Key="Active" Color="#261113"/>
   <SolidColorBrush x:Key="Disabled" Color="#353538"/>
   <Style TargetType="Button">
    <Setter Property="Foreground" Value="{StaticResource Text}"/>
