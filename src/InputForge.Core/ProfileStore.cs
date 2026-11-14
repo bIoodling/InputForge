@@ -13,10 +13,14 @@ public sealed record Preferences(string Application, MouseSettings Mouse, Dictio
         Mouse.Horizontal is >= .1f and <= 4 && Mouse.Vertical is >= .1f and <= 4 &&
         Mouse.Deadzone is >= 0 and <= .35f && Mouse.Acceleration is >= 0 and <= 3 &&
         Mouse.Point1 is >= 0 and <= 1 && Mouse.Point2 is >= 0 and <= 1 &&
+        (!Mouse.InterpolatedKnots || Mouse.Point1 <= Mouse.Point2) &&
+        Mouse.Input1 >= CurveKnots.Gap && Mouse.Input2 <= 1 - CurveKnots.Gap &&
+        Mouse.Input2 - Mouse.Input1 >= CurveKnots.Gap - .000001f &&
+        Mouse.Saturation is >= .5f and <= 1 && Mouse.AntiDeadzone is >= 0 and <= .35f &&
         Enum.IsDefined(Mouse.Curve) && Enum.IsDefined(Mouse.Filter);
 }
 
-public sealed record NamedProfile(Guid Id, string Name, Preferences Settings);
+public sealed record NamedProfile(Guid Id, string Name, Preferences Settings, InputPreset Preset = InputPreset.Custom);
 
 public sealed record ProfileLibrary(Guid Selected, List<NamedProfile> Profiles)
 {

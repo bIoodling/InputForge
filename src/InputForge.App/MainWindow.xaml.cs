@@ -29,7 +29,9 @@ public partial class MainWindow : Window
     private Preferences preferences;
     private ProfileLibrary library;
     private sealed record InterfaceOptions(bool ReduceMotion = false, bool Capture = true, string StartPage = "Dashboard",
-        bool PreviewDiagnostics = false);
+        bool PreviewDiagnostics = false, bool AutoCamera = true, int CameraIdle = 2,
+        bool StartMinimized = false, bool ConfirmExit = true, bool RememberWindow = false,
+        double? WindowLeft = null, double? WindowTop = null);
     private InterfaceOptions options;
     private bool enabled, testing;
     private readonly BindingSelection bindingSelection = new();
@@ -74,6 +76,11 @@ public partial class MainWindow : Window
         }
         bindingSelection.Changed += PresentSelection;
         model.ControlSelected += bindingSelection.Select;
+        model.CameraManuallyMoved += () =>
+        {
+            cameraBeforeShoulder = null;
+            testCamera.Manual(ClockSeconds());
+        };
         Toggle.Click += (_, _) => { enabled = !enabled; Apply(); };
         ProfileSelector.SelectionChanged += (_, _) =>
         {
@@ -92,6 +99,15 @@ public partial class MainWindow : Window
         model.ReduceMotion = options.ReduceMotion;
         model.MeasureFrames = options.PreviewDiagnostics;
         Navigate(options.StartPage is { } start && nav.ContainsKey(start) ? start : "Dashboard");
+        if (options.RememberWindow && options.WindowLeft is double left && options.WindowTop is double top &&
+            SystemParameters.VirtualScreenLeft <= left && left < SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth - 80 &&
+            SystemParameters.VirtualScreenTop <= top && top < SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight - 80)
+        {
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            Left = left;
+            Top = top;
+        }
+        if (options.StartMinimized) WindowState = WindowState.Minimized;
         SizeChanged += (_, _) =>
         {
             Navigation.Width = ActualWidth < 1140 ? 135 : 208;
@@ -172,12 +188,15 @@ public partial class MainWindow : Window
             dashboardToggle.Content = enabled ? "Disable mapping" : "Enable mapping";
         }
         if (localTestLabel is not null) localTestLabel.Text = testing ? "Testing Mode" : "";
+        if (!testing) ResetTestCamera();
         updatingProfileSelector = true;
         if (!ReferenceEquals(ProfileSelector.ItemsSource, library.Profiles)) ProfileSelector.ItemsSource = library.Profiles;
         var editing = library.Profiles.Single(p => p.Id == library.Selected);
         ProfileSelector.SelectedItem = editing;
         updatingProfileSelector = false;
         if (dashboardProfile is not null) dashboardProfile.Text = runtime.Read().Profile ?? editing.Name;
+        if (dashboardTarget is not null) dashboardTarget.Text = preferences.Application.Length == 0
+            ? "No executable associated with this profile" : System.IO.Path.GetFileName(preferences.Application);
         if (dashboardMapping is not null) dashboardMapping.Text = testing ? "Testing Mode" : enabled ? "Enabled" : "Disabled";
         if (controllerMapping is not null) controllerMapping.Text = testing ? "Testing Mode" : enabled ? "Mapping enabled" : "Mapping disabled";
         last = null;
@@ -187,21 +206,21 @@ public partial class MainWindow : Window
     {
         UpdatePreviewDiagnostics();
         var current = runtime.Read();
+        if (page == "Testing Lab" && testing && options.AutoCamera) UpdateTestCamera(current.State);
         if (current == last) return;
+        RecordActivity(current.State, last?.State ?? default);
         last = current;
         if (dashboardProfile is not null) dashboardProfile.Text = current.Profile ?? library.Profiles.Single(p => p.Id == library.Selected).Name;
         ConnectionLabel.Text = current.Connection;
         ConnectionDot.Fill = Brush(current.Connection == "Connected" ? "Accent" : "Muted");
         if (applicationStatus is not null) applicationStatus.Text = current.Application;
         if (controllerStatus is not null) controllerStatus.Text = current.Connection;
-        if (dashboardActivity is not null)
-        {
-            string inputs = string.Join(" · ", Enum.GetValues<Control>().Where(id => (int)id <= (int)Control.RightClick && current.State.IsPressed(id)).Select(Glyph));
-            if (current.State.Left.LengthSquared() > .0025f) inputs += (inputs.Length == 0 ? "" : " · ") + "LS";
-            if (current.State.Right.LengthSquared() > .0025f) inputs += (inputs.Length == 0 ? "" : " · ") + "RS";
-            if (inputs.Length > 0) recentInput = inputs;
-            if (dashboardActivity is not null) dashboardActivity.Text = recentInput ?? "No input this session";
-        }
+        if (dashboardActivity is not null) dashboardActivity.Text = ActivityText();
+        if (labHistory is not null) labHistory.Text = ActivityText();
+        labLeft?.Update(current.State.Left);
+        labRight?.Update(current.State.Right);
+        if (labTriggers is not null) labTriggers.Text = $"LT {current.State.LT:P0}   ·   RT {current.State.RT:P0}";
+        if (labInput is not null) labInput.Text = current.Input.Length == 0 ? "No current event" : current.Input;
         if (signals is not null)
             signals.Text = $"Left    {current.State.Left.X,6:F2}  {current.State.Left.Y,6:F2}\n" +
                 $"Right   {current.State.Right.X,6:F2}  {current.State.Right.Y,6:F2}\n" +
@@ -216,6 +235,7 @@ public partial class MainWindow : Window
 
     private void Navigate(string name)
     {
+        if (name != "Testing Lab") ResetTestCamera();
         if (testing && name is not ("Dashboard" or "Controller" or "Testing Lab" or "Mouse")) testing = false;
         CancelRebind();
         if (model.Parent is Panel oldParent) oldParent.Children.Remove(model);
@@ -227,6 +247,8 @@ public partial class MainWindow : Window
         dashboardProfile = dashboardMapping = dashboardActivity = mouseOutput = null;
         dashboardToggle = null;
         mouseStickPreview = null;
+        labLeft = labRight = null;
+        labTriggers = labInput = labHistory = dashboardTarget = null;
         rebind = null;
         mouseChoices = null;
         localTest = null;
@@ -332,7 +354,11 @@ public partial class MainWindow : Window
         var shortcuts = Buttons(ButtonFor("Controller", () => Navigate("Controller")),
             ButtonFor("Mouse", () => Navigate("Mouse")), ButtonFor("Profiles", () => Navigate("Profiles")));
         shortcuts.Margin = new Thickness(0,5,0,0);
-        var main = Column(Surface(Column(Section("Controller mapping"), dashboardToggle),24),
+        shortcuts.Children.Add(ButtonFor("Testing Lab", () => Navigate("Testing Lab")));
+        dashboardToggle.HorizontalAlignment = HorizontalAlignment.Left;
+        var main = Column(Surface(Column(Section("Controller mapping"), dashboardTarget = Text("", 14, "Muted"),
+                Text("Output is limited to the associated foreground application. Esc disables mapping in InputForge.", 13, "Muted"),
+                dashboardToggle),24),
             Surface(Column(Section("Quick access"), shortcuts),24));
         main.Margin = new Thickness(0,0,18,0);
         layout.Children.Add(main);
@@ -358,7 +384,20 @@ public partial class MainWindow : Window
     private Button? dashboardToggle;
 
     private TextBlock? dashboardProfile, dashboardMapping, dashboardActivity, mouseOutput;
-    private string? recentInput;
+    private TextBlock? dashboardTarget;
+    private readonly Queue<string> activity = new(6);
+    private static readonly Control[] observedControls = Enum.GetValues<Control>().Where(id => (int)id <= (int)Control.RightClick).ToArray();
+    private string ActivityText() => activity.Count == 0 ? "No mapped input observed" : string.Join("\n", activity.Reverse());
+    private void RecordActivity(ControllerState state, ControllerState previous)
+    {
+        uint press = state.Buttons & ~previous.Buttons;
+        if (press == 0 && state.Left == previous.Left && state.Right == previous.Right) return;
+        foreach (var id in observedControls)
+            if ((press & (1u << (int)id)) != 0) Add($"{DateTime.Now:HH:mm:ss}  ·  {Display(id)}");
+        if (state.Left.LengthSquared() > .04f && previous.Left.LengthSquared() <= .04f) Add($"{DateTime.Now:HH:mm:ss}  ·  Left stick");
+        if (state.Right.LengthSquared() > .04f && previous.Right.LengthSquared() <= .04f) Add($"{DateTime.Now:HH:mm:ss}  ·  Right stick");
+        void Add(string value) { if (activity.Count == 6) activity.Dequeue(); activity.Enqueue(value); }
+    }
     private DockPanel ControllerPage() => ControllerWorkspace("Controller");
 
     private DockPanel ControllerWorkspace(string title)
@@ -607,20 +646,70 @@ public partial class MainWindow : Window
             Text("Smoothing", 14), Combo("Smoothing", Enum.GetValues<Smoothing>(), current.Filter, value =>
                 ChangeMouse(preferences.Mouse with { Filter = value })),
             SliderFor("Deadzone", 0, .35, current.Deadzone, value => ChangeMouse(preferences.Mouse with { Deadzone = value })),
-            SliderFor("Acceleration", 0, 3, current.Acceleration, value => ChangeMouse(preferences.Mouse with { Acceleration = value }))),24);
-        var chart = new CurveView(current, (index,value) =>
-            ChangeMouse(index == 0 ? preferences.Mouse with { Point1 = value } : preferences.Mouse with { Point2 = value })) { Height = 226 };
-        var mode = Combo("Response curve", Enum.GetValues<ResponseCurve>(), current.Curve, value =>
+            SliderFor("Acceleration", 0, 3, current.Acceleration, value => ChangeMouse(preferences.Mouse with { Acceleration = value })),
+            SliderFor("Saturation", .5, 1, current.Saturation, value => ChangeMouse(preferences.Mouse with { Saturation = value })),
+            SliderFor("Anti-deadzone", 0, .35, current.AntiDeadzone, value => ChangeMouse(preferences.Mouse with { AntiDeadzone = value }))),24);
+        var input = new TextBox { Width = 65 };
+        var outputField = new TextBox { Width = 65 };
+        System.Windows.Automation.AutomationProperties.SetName(input, "Point input coordinate");
+        System.Windows.Automation.AutomationProperties.SetName(outputField, "Point output coordinate");
+        var pointLabel = Text("Point 1", 13, "Muted");
+        var mode = new ComboBox { ItemsSource = Enum.GetValues<ResponseCurve>(), SelectedItem = current.Curve, MinWidth = 124 };
+        mode.ItemTemplate = CurveNames.Template;
+        var chart = new CurveView(current, value =>
         {
-            ChangeMouse(preferences.Mouse with { Curve = value });
-            chart.UpdateSettings(preferences.Mouse);
+            ChangeMouse(preferences.Mouse with { Curve = value.Curve, Point1 = value.Point1, Point2 = value.Point2,
+                Input1 = value.Input1, Input2 = value.Input2, InterpolatedKnots = value.InterpolatedKnots });
+            mode.SelectedItem = ResponseCurve.Custom;
+            FillCoordinates(value);
+        }) { Height = 220, Focusable = true };
+        void FillCoordinates(MouseSettings value)
+        {
+            var custom = CurveKnots.AsCustom(value);
+            input.Text = (chart.Selected == 0 ? custom.Input1 : custom.Input2).ToString("0.000", System.Globalization.CultureInfo.InvariantCulture);
+            outputField.Text = (chart.Selected == 0 ? custom.Point1 : custom.Point2).ToString("0.000", System.Globalization.CultureInfo.InvariantCulture);
+            pointLabel.Text = $"Point {chart.Selected + 1}";
+        }
+        void ChangeCurve(ResponseCurve value)
+        {
+            MouseSettings next = value == ResponseCurve.Custom ? CurveKnots.AsCustom(preferences.Mouse) : preferences.Mouse with { Curve = value };
+            if (next != preferences.Mouse) ChangeMouse(next);
+            chart.UpdateSettings(next);
+            FillCoordinates(next);
+        }
+        mode.SelectionChanged += (_, _) => { if (mode.SelectedItem is ResponseCurve value) ChangeCurve(value); };
+        chart.PointSelected += _ => FillCoordinates(chart.Settings);
+        FillCoordinates(current);
+        var applyPoint = ButtonFor("Apply", () =>
+        {
+            var culture = System.Globalization.CultureInfo.InvariantCulture;
+            if (float.TryParse(input.Text, System.Globalization.NumberStyles.Float, culture, out float x) &&
+                float.TryParse(outputField.Text, System.Globalization.NumberStyles.Float, culture, out float y))
+                chart.MoveSelected(x, y);
+            FillCoordinates(chart.Settings);
         });
+        var coordinates = new WrapPanel
+        {
+            Children = { ButtonFor("Point 1", () => chart.Select(0)), ButtonFor("Point 2", () => chart.Select(1)),
+                Row(Text("X"), input), Row(Text("Y"), outputField), applyPoint,
+                ButtonFor("Reset", () =>
+                {
+                    var reset = new MouseSettings();
+                    ChangeMouse(preferences.Mouse with { Curve = reset.Curve, Point1 = reset.Point1, Point2 = reset.Point2,
+                        Input1 = reset.Input1, Input2 = reset.Input2, InterpolatedKnots = false });
+                    mode.SelectedItem = ResponseCurve.Linear;
+                    chart.UpdateSettings(preferences.Mouse);
+                    FillCoordinates(preferences.Mouse);
+                }) }
+        };
+        foreach (FrameworkElement child in coordinates.Children) child.Margin = new Thickness(0,0,6,6);
         var curveHeader = new DockPanel { Children = { mode, Section("Response curve") } };
         DockPanel.SetDock(mode, Dock.Right);
         var preview = new StickPreview { Width = 118, Height = 118 };
         mouseStickPreview = preview;
         var output = Row(preview, mouseOutput = Text("", 13, "Muted"));
-        var right = Column(Surface(Column(curveHeader, chart),22),
+        var right = Column(Surface(Column(curveHeader, chart, coordinates,
+                Text("X: normalized input · Y: stick response before smoothing", 12, "Muted")),22),
             Surface(Column(Section("Live preview"), output, MouseTestButton()),22));
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition());
@@ -687,9 +776,21 @@ public partial class MainWindow : Window
             UpdateProfiles(library);
         });
         var actions = new WrapPanel();
-        actions.Children.Add(ButtonFor("Create", () => AddProfile("New profile", Preferences.Create())));
+        actions.Children.Add(ButtonFor("Create from preset", () =>
+        {
+            var presets = new ComboBox { ItemsSource = Enum.GetValues<InputPreset>(), SelectedItem = InputPreset.Default };
+            if (ShowDarkDialog("Create profile", presets, "Create") && presets.SelectedItem is InputPreset preset)
+                AddProfile(preset.ToString(), Preferences.Create() with { Mouse = InputPresets.Create(preset) }, preset);
+        }));
         actions.Children.Add(ButtonFor("Duplicate", () => AddProfile((active.Name.Length > 59 ? active.Name[..59] : active.Name) + " copy",
-            preferences with { Application = "", Bindings = new(preferences.Bindings) })));
+            preferences with { Application = "", Bindings = new(preferences.Bindings) }, active.Preset)));
+        actions.Children.Add(ButtonFor("Reset response", () =>
+        {
+            if (!ShowDarkDialog("Reset mouse response", Text($"Restore the {active.Preset} starting settings?"), "Reset")) return;
+            preferences = preferences with { Mouse = InputPresets.Create(active.Preset) };
+            CommitProfileSettings();
+            UpdateProfiles(library);
+        }));
         actions.Children.Add(ButtonFor("Delete", () =>
         {
             if (library.Profiles.Count == 1) { ProfileError("Keep at least one profile."); return; }
@@ -702,7 +803,7 @@ public partial class MainWindow : Window
         actions.Children.Add(ButtonFor("Export", ExportProfile));
         foreach (FrameworkElement item in actions.Children) item.Margin = new Thickness(0,0,7,7);
 
-        var editor = Surface(Column(Text("Profile name", 16), name, ButtonFor("Rename", () =>
+        var editor = Surface(Column(Section("Profile details"), Text("Name", 13, "Muted"), name, ButtonFor("Rename", () =>
         {
             string next = name.Text.Trim();
             if (next.Length == 0) { ProfileError("Enter a profile name."); return; }
@@ -715,6 +816,8 @@ public partial class MainWindow : Window
                 UpdateProfiles(library);
             })),
             Text("Mapping switches profiles when an associated executable gains focus.", 12, "Muted"),
+            Section("Input response"), Text($"{active.Preset} starting point · {preferences.Mouse.Filter} smoothing · {preferences.Mouse.Deadzone:P0} deadzone", 13, "Muted"),
+            new CurveView(preferences.Mouse) { Height = 145 },
             notice = Text(persistenceError ?? "", 12, "Muted")), 18);
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -753,9 +856,9 @@ public partial class MainWindow : Window
         Navigate(page);
     }
 
-    private void AddProfile(string name, Preferences settings)
+    private void AddProfile(string name, Preferences settings, InputPreset preset = InputPreset.Custom)
     {
-        var profile = new NamedProfile(Guid.NewGuid(), name, settings);
+        var profile = new NamedProfile(Guid.NewGuid(), name, settings, preset);
         UpdateProfiles(new(profile.Id, [..library.Profiles, profile]));
     }
 
@@ -794,21 +897,80 @@ public partial class MainWindow : Window
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ProfileError("The profile could not be exported."); }
     }
 
+    private readonly TestCamera testCamera = new();
+    private OrbitPose? cameraBeforeShoulder;
+    private StickPreview? labLeft, labRight;
+    private TextBlock? labTriggers, labInput, labHistory;
+
+    private static double ClockSeconds() =>
+        (double)System.Diagnostics.Stopwatch.GetTimestamp() / System.Diagnostics.Stopwatch.Frequency;
+
+    private void ResetTestCamera()
+    {
+        testCamera.Reset();
+        if (cameraBeforeShoulder is { } previous) model.RestoreView(previous);
+        cameraBeforeShoulder = null;
+    }
+
+    private void UpdateTestCamera(ControllerState state)
+    {
+        var change = testCamera.Update(state, ClockSeconds(), Math.Clamp(options.CameraIdle, 1, 5));
+        switch (change)
+        {
+            case CameraView.Shoulder:
+                cameraBeforeShoulder ??= model.CameraPose;
+                model.Shoulder();
+                break;
+            case CameraView.Front:
+                model.Front();
+                cameraBeforeShoulder = null;
+                break;
+            case CameraView.Manual:
+                if (cameraBeforeShoulder is { } previous) model.RestoreView(previous);
+                cameraBeforeShoulder = null;
+                break;
+        }
+    }
+
     private DockPanel TestingLab()
     {
         var frame = Frame("Testing Lab");
         if (viewerExpanded) { frame.Children.Add(Scene()); return frame; }
-        var readout = signals = Text("", 13, "Muted");
-        readout.FontFamily = new FontFamily("Consolas");
-        readout.Margin = new Thickness(0,10,0,0);
-        var diagnostic = Surface(Column(Row(ButtonFor("Emergency disable", () =>
+        var auto = new CheckBox { Content = "Auto Camera", IsChecked = options.AutoCamera };
+        auto.Click += (_, _) =>
         {
-            enabled = testing = false;
-            Apply();
-        })), readout), 16);
-        DockPanel.SetDock(diagnostic,Dock.Bottom);
-        frame.Children.Add(diagnostic);
-        frame.Children.Add(Scene());
+            if (auto.IsChecked != true) ResetTestCamera();
+            SetInterfaceOptions(options with { AutoCamera = auto.IsChecked == true });
+        };
+        var timeout = Combo("Return delay in seconds", new[] { 1, 2, 3, 5 }, options.CameraIdle,
+            seconds => SetInterfaceOptions(options with { CameraIdle = seconds }));
+        var emergency = ButtonFor("Emergency disable", () => { enabled = testing = false; Apply(); });
+        emergency.Background = Brush("Accent");
+        var toolbar = new WrapPanel { Children = { emergency, auto, Row(Text("Return delay", 13, "Muted"), timeout) } };
+        foreach (FrameworkElement item in toolbar.Children) item.Margin = new Thickness(0,0,12,8);
+        DockPanel.SetDock(toolbar, Dock.Top);
+        frame.Children.Add(toolbar);
+
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 238 });
+        var scene = Scene();
+        scene.Margin = new Thickness(0,0,18,0);
+        grid.Children.Add(scene);
+        labLeft = new StickPreview { Width = 73, Height = 73 };
+        labRight = new StickPreview { Width = 73, Height = 73 };
+        var axes = new UniformGrid { Columns = 2, Children = { Column(Text("Left",13), labLeft), Column(Text("Right",13), labRight) } };
+        var data = Surface(Column(Section("Controller output"), axes,
+            labTriggers = Text("", 14), Section("Current input"), labInput = Text("", 13, "Muted"),
+            Section("Recent activity"), labHistory = Text("", 13, "Muted"),
+            new Expander { Header = "Input diagnostics", Foreground = Brush("Text"),
+                Content = signals = Text("", 12, "Muted") }), 18);
+        data.VerticalAlignment = VerticalAlignment.Top;
+        var scroll = new ScrollViewer { Content = data, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        Grid.SetColumn(scroll,1);
+        grid.Children.Add(scroll);
+        frame.Children.Add(grid);
         return frame;
     }
 
@@ -840,14 +1002,72 @@ public partial class MainWindow : Window
         {
             if (startup.SelectedItem is string name) SetInterfaceOptions(options with { StartPage = name });
         };
-        var body = Surface(Column(Text("Appearance", 16), motion, diagnostics,
-            Text("Startup", 16), Row(Text("Open on launch", 13, "Muted"), startup),
-            Text("Input and safety", 16), capture, Text("Mapping starts off. Escape disables mapping and local testing.", 13, "Muted"),
-            Text("Controller backend", 16), controllerStatus = Text(runtime.Read().Connection, 13, "Muted"),
-            Text("ViGEmBus is required for virtual Xbox output. It is separately installed and retired.", 13, "Muted"),
-            notice = Text(persistenceError ?? "", 13, "Muted")), 18);
-        frame.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        CheckBox Option(string name, bool initial, Action<bool> change)
+        {
+            var value = new CheckBox { Content = name, IsChecked = initial };
+            value.Click += (_, _) => change(value.IsChecked == true);
+            return value;
+        }
+        var general = Surface(Column(Section("General"), Row(Text("Open on launch"), startup),
+            Option("Start minimised", options.StartMinimized, value => SetInterfaceOptions(options with { StartMinimized = value })),
+            Option("Remember window position", options.RememberWindow, value => SetInterfaceOptions(options with { RememberWindow = value })),
+            Option("Confirm exit while mapping is armed", options.ConfirmExit, value => SetInterfaceOptions(options with { ConfirmExit = value }))), 22);
+        var appearance = Surface(Column(Section("Appearance and performance"), motion, diagnostics,
+            Text("Preview pauses while minimised. Frame timing is available in developer diagnostics.", 13, "Muted")),22);
+        var safety = Surface(Column(Section("Input and safety"), capture,
+            Text("Input always passes through. Virtual output releases when the associated application loses focus. Esc disables mapping in this window.", 13, "Muted")),22);
+        var backend = Surface(Column(Section("Controller"), controllerStatus = Text(runtime.Read().Connection, 14),
+            Text("ViGEmBus · Xbox 360 output", 13, "Muted"), ButtonFor("Open Testing Lab", () => Navigate("Testing Lab"))),22);
+        var data = Surface(Column(Section("Profiles and data"), Buttons(ButtonFor("Manage profiles", () => Navigate("Profiles")),
+            ButtonFor("Export profile library", () => TransferLibrary(false)),
+            ButtonFor("Import profile library", () => TransferLibrary(true)),
+            ButtonFor("Reset application preferences", () =>
+            {
+                if (!ShowDarkDialog("Reset application preferences", Text("Restore interface and capture defaults?"), "Reset")) return;
+                enabled = testing = false;
+                model.ReduceMotion = model.MeasureFrames = false;
+                SetInterfaceOptions(new());
+                Navigate("Settings");
+            })), notice = Text(persistenceError ?? "", 13, "Muted")),22);
+        var about = Surface(Column(Section("About"),
+            Text("InputForge " + (typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? ""), 14),
+            Text("GPL-3.0-or-later · Xbox Elite Controller model by Rusfort (CC BY 4.0)", 13, "Muted"),
+            Text("github.com/bIoodling/InputForge", 13, "Muted")),22);
+        var columns = new Grid();
+        columns.ColumnDefinitions.Add(new ColumnDefinition());
+        columns.ColumnDefinitions.Add(new ColumnDefinition());
+        var left = Column(general, appearance, safety);
+        left.Margin = new Thickness(0,0,18,0);
+        var right = Column(backend, data, about);
+        Grid.SetColumn(right,1);
+        columns.Children.Add(left);
+        columns.Children.Add(right);
+        frame.Children.Add(new ScrollViewer { Content = columns, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         return frame;
+    }
+
+    private void TransferLibrary(bool import)
+    {
+        FileDialog picker = import ? new OpenFileDialog { CheckFileExists = true } : new SaveFileDialog { AddExtension = true };
+        picker.Filter = "InputForge profile library (*.json)|*.json";
+        if (picker.ShowDialog(this) != true) return;
+        if (!import && (System.IO.Path.GetDirectoryName(picker.FileName)?.Equals(System.IO.Path.GetDirectoryName(LibraryPath), StringComparison.OrdinalIgnoreCase) ?? false))
+        {
+            ProfileError("Choose a location outside the configuration directory.");
+            return;
+        }
+        try
+        {
+            if (!import) { ProfileStore.WriteLibrary(picker.FileName, library); ProfileError("Profile library exported."); return; }
+            var next = ProfileStore.ReadLibrary(picker.FileName);
+            if (!ShowDarkDialog("Replace profile library", Text("Replace the current library with the imported profiles?"), "Replace")) return;
+            enabled = testing = false;
+            UpdateProfiles(next);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+        {
+            ProfileError(import ? "The profile library could not be imported." : "The profile library could not be exported.");
+        }
     }
 
     private readonly System.Diagnostics.Process currentProcess = System.Diagnostics.Process.GetCurrentProcess();
@@ -969,6 +1189,24 @@ public partial class MainWindow : Window
     {
         base.OnInitialized(e);
         delayedSave.Tick += (_, _) => { delayedSave.Stop(); SavePreferences(); };
+    }
+
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        base.OnClosing(e);
+        if (e.Cancel) return;
+        if (enabled && options.ConfirmExit &&
+            !ShowDarkDialog("Exit InputForge", Text("Mapping is armed. Exit and release controller output?"), "Exit"))
+        {
+            e.Cancel = true;
+            return;
+        }
+        if (options.RememberWindow && !viewerExpanded)
+        {
+            var bounds = RestoreBounds;
+            if (!bounds.IsEmpty && double.IsFinite(bounds.Left) && double.IsFinite(bounds.Top))
+                SetInterfaceOptions(options with { WindowLeft = bounds.Left, WindowTop = bounds.Top });
+        }
     }
 
     protected override void OnClosed(EventArgs e)

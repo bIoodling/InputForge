@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -5,79 +6,125 @@ using InputForge.Core;
 
 namespace InputForge.App;
 
-internal sealed class CurveView(MouseSettings settings, Action<int, float> onChanged) : FrameworkElement
+internal sealed class CurveView(MouseSettings settings, Action<MouseSettings>? onChanged = null) : FrameworkElement
 {
     private MouseSettings mouse = settings;
+    private int selected;
+    private bool dragging;
+    private Rect Plot => new(38, 12, Math.Max(1, ActualWidth - 53), Math.Max(1, ActualHeight - 44));
+
+    public event Action<int>? PointSelected;
+    public int Selected => selected;
+    public MouseSettings Settings => mouse;
+
     public void UpdateSettings(MouseSettings value)
     {
         mouse = value;
         InvalidateVisual();
     }
-    private int point = -1;
-    private Rect Plot => new(22,18,Math.Max(1,ActualWidth-44),Math.Max(1,ActualHeight-36));
 
-    private Point At(double x, double y) => new(Plot.Left+x*Plot.Width,Plot.Bottom-y*Plot.Height);
-    private Point Handle(int index) => At((index+1)/3.0,index == 0 ? mouse.Point1 : mouse.Point2);
+    public void MoveSelected(float input, float output)
+    {
+        if (onChanged is null) return;
+        var next = CurveKnots.Move(mouse, selected, input, output);
+        if (next == mouse) return;
+        UpdateSettings(next);
+        onChanged(next);
+    }
+
+    public void Select(int index)
+    {
+        selected = index;
+        PointSelected?.Invoke(index);
+        InvalidateVisual();
+    }
+
+    private Point At(double x, double y) => new(Plot.Left + x * Plot.Width, Plot.Bottom - y * Plot.Height);
+    private Point Handle(int index)
+    {
+        var custom = CurveKnots.AsCustom(mouse);
+        return index == 0 ? At(custom.Input1, custom.Point1) : At(custom.Input2, custom.Point2);
+    }
 
     protected override void OnRender(DrawingContext dc)
     {
-        base.OnRender(dc);
-        dc.DrawRectangle(Brushes.Transparent,null,new Rect(RenderSize));
-        var axes = new Pen(MainWindow.Brush("Border"),1);
+        dc.DrawRectangle(Brushes.Transparent, null, new Rect(RenderSize));
+        var axes = new Pen(MainWindow.Brush("Border"), 1);
+        var face = new Typeface("Segoe UI");
         for (int step = 0; step <= 5; step++)
         {
             double mark = step / 5.0;
             dc.DrawLine(axes, At(mark, 0), At(mark, 1));
             dc.DrawLine(axes, At(0, mark), At(1, mark));
+            var label = new FormattedText(mark.ToString("0.0", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight, face, 11, MainWindow.Brush("Muted"), VisualTreeHelper.GetDpi(this).PixelsPerDip);
+            dc.DrawText(label, At(mark, 0) + new Vector(-8, 6));
+            dc.DrawText(label, At(0, mark) + new Vector(-28, -7));
         }
         var curve = new StreamGeometry();
         using (var context = curve.Open())
         {
-            context.BeginFigure(At(0,0),false,false);
-            for (int i = 1; i <= 80; i++)
+            context.BeginFigure(At(0, 0), false, false);
+            for (int i = 1; i <= 120; i++)
             {
-                float x = i / 80f;
-                context.LineTo(At(x,Mapper.EvaluateCurve(x,mouse)),true,false);
+                float x = i / 120f;
+                context.LineTo(At(x, Mapper.EvaluateCurve(x, mouse)), true, false);
             }
         }
         curve.Freeze();
         var red = MainWindow.Brush("Accent");
-        dc.DrawGeometry(null,new Pen(red,1.5),curve);
-        if (mouse.Curve == ResponseCurve.Custom)
-        {
-            dc.DrawEllipse(red,null,Handle(0),5,5);
-            dc.DrawEllipse(red,null,Handle(1),5,5);
-        }
+        dc.DrawGeometry(null, new Pen(red, 2), curve);
+        if (onChanged is null) return;
+        for (int i = 0; i < 2; i++)
+            dc.DrawEllipse(red, i == selected ? new Pen(MainWindow.Brush("Text"), 1.5) : null, Handle(i), 5, 5);
     }
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
-        if (mouse.Curve != ResponseCurve.Custom) return;
+        if (onChanged is null) return;
         var at = e.GetPosition(this);
-        for (int i=0; i<2; i++)
-        {
-            if ((at-Handle(i)).Length > 14) continue;
-            point = i;
-            CaptureMouse();
-            e.Handled = true;
-            break;
-        }
+        var first = (at - Handle(0)).Length;
+        var second = (at - Handle(1)).Length;
+        if (Math.Min(first, second) > 15) return;
+        Select(first <= second ? 0 : 1);
+        Focus();
+        dragging = CaptureMouse();
+        e.Handled = true;
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
-        if (point < 0 || !IsMouseCaptured) return;
-        float value = (float)Math.Clamp((Plot.Bottom-e.GetPosition(this).Y)/Plot.Height,0,1);
-        mouse = point == 0 ? mouse with { Point1 = value } : mouse with { Point2 = value };
-        onChanged(point,value);
-        InvalidateVisual();
+        if (!dragging || !IsMouseCaptured) return;
+        var p = e.GetPosition(this);
+        MoveSelected((float)((p.X - Plot.Left) / Plot.Width), (float)((Plot.Bottom - p.Y) / Plot.Height));
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
-        if (!IsMouseCaptured) return;
-        point = -1;
+        if (!dragging) return;
+        dragging = false;
         ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    protected override void OnLostMouseCapture(MouseEventArgs e) => dragging = false;
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (onChanged is null) return;
+        var custom = CurveKnots.AsCustom(mouse);
+        float input = selected == 0 ? custom.Input1 : custom.Input2;
+        float output = selected == 0 ? custom.Point1 : custom.Point2;
+        const float step = .005f;
+        switch (e.Key)
+        {
+            case Key.Left: input -= step; break;
+            case Key.Right: input += step; break;
+            case Key.Up: output += step; break;
+            case Key.Down: output -= step; break;
+            default: return;
+        }
+        MoveSelected(input, output);
         e.Handled = true;
     }
 }

@@ -93,6 +93,7 @@
       </ControlTemplate></ToggleButton.Template>
      </ToggleButton>
      <ContentPresenter Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+       ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
        HorizontalAlignment="Left" VerticalAlignment="Center" Margin="12,0,28,0" IsHitTestVisible="False"/>
      <Border x:Name="FocusRing" BorderThickness="1" CornerRadius="8" IsHitTestVisible="False"/>
      <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True" Focusable="False">

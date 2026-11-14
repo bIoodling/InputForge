@@ -95,30 +95,48 @@ internal sealed record EliteModel(IReadOnlyList<ElitePart> Parts)
             textures.Add(id, bitmap);
             return bitmap;
         }
-        var materials = scene.GetProperty("materials").EnumerateArray().Select(material =>
+        var definitions = scene.GetProperty("materials");
+        var finishes = new Dictionary<(int, bool), MaterialGroup>();
+        BitmapSource? graphiteAtlas = null;
+        MaterialGroup Finish(int materialIndex, bool graphite)
         {
+            if (finishes.TryGetValue((materialIndex, graphite), out var existing)) return existing;
+            var material = definitions[materialIndex];
             var pbr = material.GetProperty("pbrMetallicRoughness");
             Brush diffuse;
             if (pbr.TryGetProperty("baseColorTexture", out var baseColor))
-                diffuse = AtlasBrush(Texture(Number(baseColor, "index")));
+            {
+                var baseTexture = Texture(Number(baseColor, "index"));
+                diffuse = AtlasBrush(graphite ? GraphiteAtlas(baseTexture) : baseTexture);
+            }
             else
             {
                 var rgba = pbr.GetProperty("baseColorFactor").EnumerateArray().Select(v => v.GetSingle()).ToArray();
-                diffuse = new SolidColorBrush(Color.FromScRgb(rgba[3], rgba[0], rgba[1], rgba[2]));
+                diffuse = materialIndex == 1
+                    ? new SolidColorBrush(Color.FromArgb(24, 64, 65, 69))
+                    : new SolidColorBrush(Color.FromScRgb(rgba[3], rgba[0], rgba[1], rgba[2]));
             }
 
             var group = new MaterialGroup();
             group.Children.Add(new DiffuseMaterial(diffuse));
             if (pbr.TryGetProperty("metallicRoughnessTexture", out var packed))
                 group.Children.Add(new SpecularMaterial(AtlasBrush(SpecularAtlas(Texture(Number(packed, "index")),
-                    pbr.TryGetProperty("metallicFactor", out var metallic) ? metallic.GetDouble() : 1)), 26));
+                    pbr.TryGetProperty("metallicFactor", out var metallic) ? metallic.GetDouble() : 1,
+                    graphite ? .55 : .8)), 32));
             else
                 group.Children.Add(new SpecularMaterial(new SolidColorBrush(Color.FromRgb(29, 29, 29)), 32));
             if (material.TryGetProperty("emissiveTexture", out var emission))
                 group.Children.Add(new EmissiveMaterial(AtlasBrush(Texture(Number(emission, "index")))));
             group.Freeze();
+            finishes.Add((materialIndex, graphite), group);
             return group;
-        }).ToArray();
+        }
+        BitmapSource GraphiteAtlas(BitmapSource source) => graphiteAtlas ??= TransformAtlas(source, pixels =>
+        {
+            for (int i = 0; i < pixels.Length; i += 4)
+                for (int channel = 0; channel < 3; channel++)
+                    pixels[i + channel] = (byte)Math.Round(pixels[i + channel] * .47);
+        });
 
         var parts = new List<ElitePart>();
         var nodes = scene.GetProperty("nodes");
@@ -204,7 +222,8 @@ internal sealed record EliteModel(IReadOnlyList<ElitePart> Parts)
                 };
                 mesh.Freeze();
                 var mapped = control >= 0 ? (Control?)control : null;
-                parts.Add(new(mesh, materials[materialIndex], mapped, fit.Transform(Pivot(mapped)), materialIndex == 1));
+                bool graphite = meshIndex is 0 or 8 or 9 or 10;
+                parts.Add(new(mesh, Finish(materialIndex, graphite), mapped, fit.Transform(Pivot(mapped)), materialIndex == 1));
             }
         }
 
@@ -229,21 +248,27 @@ internal sealed record EliteModel(IReadOnlyList<ElitePart> Parts)
         return brush;
     }
 
-    private static BitmapSource SpecularAtlas(BitmapSource source, double metalFactor)
+    private static BitmapSource SpecularAtlas(BitmapSource source, double metalFactor, double strength) =>
+        TransformAtlas(source, pixels =>
+        {
+            for (int i = 0; i < pixels.Length; i += 4)
+            {
+                double metal = pixels[i] * metalFactor / 255;
+                double smooth = 1 - pixels[i + 1] / 255.0;
+                byte intensity = (byte)Math.Round(10 + strength * 90 * (.22 + .78 * metal) * smooth);
+                pixels[i] = pixels[i + 1] = pixels[i + 2] = intensity;
+                pixels[i + 3] = 255;
+            }
+        });
+
+    private static BitmapSource TransformAtlas(BitmapSource source, Action<byte[]> adjust)
     {
         // glTF's packed G/B channels are linear material data.
         var bitmap = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
         int stride = bitmap.PixelWidth * 4;
         var pixels = new byte[stride * bitmap.PixelHeight];
         bitmap.CopyPixels(pixels, stride, 0);
-        for (int i = 0; i < pixels.Length; i += 4)
-        {
-            double metal = pixels[i] * metalFactor / 255;
-            double smooth = 1 - pixels[i + 1] / 255.0;
-            byte intensity = (byte)Math.Round(12 + 105 * (.22 + .78 * metal) * smooth);
-            pixels[i] = pixels[i + 1] = pixels[i + 2] = intensity;
-            pixels[i + 3] = 255;
-        }
+        adjust(pixels);
         var result = BitmapSource.Create(bitmap.PixelWidth, bitmap.PixelHeight, 96, 96, PixelFormats.Bgra32, null, pixels, stride);
         result.Freeze();
         return result;
@@ -306,9 +331,7 @@ internal sealed record EliteModel(IReadOnlyList<ElitePart> Parts)
     {
         return mesh switch
         {
-            0 => Math.Abs(triangle.X + 2.01) > Math.Abs(triangle.Y + 1.04)
-                ? triangle.X > -2.01 ? Control.Right : Control.Left
-                : triangle.Y > -1.04 ? Control.Up : Control.Down,
+            0 => DirectionalPad.Direction(triangle.X + 2.01, (triangle.Y + 1.04) / .964),
             1 => Control.LeftClick,
             16 => Control.RightClick,
             2 or 10 => c.X < 3.6 ? Control.X : c.X > 4.75 ? Control.B : c.Y > 1.5 ? Control.Y : Control.A,

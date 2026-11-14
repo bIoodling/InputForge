@@ -53,6 +53,7 @@ internal sealed class ControllerViewport : Grid
     private Control? selected;
 
     public event Action<Control>? ControlSelected;
+    public event Action? CameraManuallyMoved;
 
     public ControllerViewport()
     {
@@ -168,6 +169,9 @@ internal sealed class ControllerViewport : Grid
     public void Reset() => SetPose(OrbitPose.Front);
     public void Front() => SetPose(OrbitPose.Front with { Distance = target.Distance });
     public void Rear() => SetPose(OrbitPose.Rear with { Distance = target.Distance });
+    public void Shoulder() => SetPose(new OrbitPose(-.23, .93, target.Distance));
+    public OrbitPose CameraPose => target;
+    public void RestoreView(OrbitPose previous) => SetPose(previous);
 
     public void PauseOrbit() { paused = true; StopOrbit(); }
     public void ResumeOrbit() { paused = false; if (IsVisible && pose != target) StartOrbit(); }
@@ -253,6 +257,7 @@ internal sealed class ControllerViewport : Grid
         if (!IsMouseCaptured || e.LeftButton != MouseButtonState.Pressed) return;
         Point now = e.GetPosition(this);
         if (!dragging && (now - start).Length < 5) return;
+        CameraManuallyMoved?.Invoke();
         dragging = true;
         target = pose = target.Drag(now.X-last.X, now.Y-last.Y);
         if (MeasureFrames) StartOrbit();
@@ -278,7 +283,14 @@ internal sealed class ControllerViewport : Grid
                 return HitTestResultBehavior.Continue;
             }, new PointHitTestParameters(position));
             if (hit?.ModelHit is GeometryModel3D part && hits.TryGetValue(part, out Control control))
+            {
+                if (control is Control.Up or Control.Down or Control.Left or Control.Right)
+                {
+                    Point3D point = hit.PointHit;
+                    control = DirectionalPad.Direction(point.X / .265 + 2.01, (point.Y / .265 - .95 + 1.04) / .964);
+                }
                 ControlSelected?.Invoke(control);
+            }
             else if (clicks == 2 && hit is null) Reset();
         }
         e.Handled = true;
@@ -294,6 +306,7 @@ internal sealed class ControllerViewport : Grid
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
         if (TestingInput) { e.Handled = true; return; }
+        CameraManuallyMoved?.Invoke();
         SetPose(target.Zoom(e.Delta / 120.0));
         e.Handled = true;
     }

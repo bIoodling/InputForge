@@ -9,12 +9,14 @@ public enum Control
     LeftUp, LeftDown, LeftLeft, LeftRight, RightUp, RightDown, RightLeft, RightRight
 }
 
-public enum ResponseCurve { Linear, Precision, Smooth, Aggressive, Custom }
+public enum ResponseCurve { Linear, Precision, Smooth, Aggressive, Custom, Dynamic }
 public enum Smoothing { Off, Exponential, Adaptive, LowPass }
 
 public sealed record MouseSettings(float Horizontal = 1, float Vertical = 1, float Deadzone = .08f,
     float Acceleration = 0, Smoothing Filter = Smoothing.Exponential,
-    ResponseCurve Curve = ResponseCurve.Linear, float Point1 = .25f, float Point2 = .75f);
+    ResponseCurve Curve = ResponseCurve.Linear, float Point1 = .25f, float Point2 = .75f,
+    float Input1 = 1f / 3, float Input2 = 2f / 3, float Saturation = 1, float AntiDeadzone = 0,
+    bool InterpolatedKnots = false);
 
 public readonly record struct ControllerState(uint Buttons, Vector2 Left, Vector2 Right, float LT, float RT)
 {
@@ -74,8 +76,10 @@ public sealed class Mapper
         if (magnitude > mouse.Deadzone)
         {
             float accelerated = magnitude * (1 + mouse.Acceleration * Math.Min(magnitude, 1));
-            float normalized = Math.Clamp((accelerated - mouse.Deadzone) / (1 - mouse.Deadzone), 0, 1);
-            target = scaled / magnitude * EvaluateCurve(normalized, mouse);
+            float normalized = Math.Clamp((accelerated - mouse.Deadzone) / (mouse.Saturation - mouse.Deadzone), 0, 1);
+            float output = EvaluateCurve(normalized, mouse);
+            if (output > 0) output = mouse.AntiDeadzone + (1 - mouse.AntiDeadzone) * output;
+            target = scaled / magnitude * output;
         }
 
         float timeConstant = mouse.Filter switch
@@ -100,8 +104,8 @@ public sealed class Mapper
         ResponseCurve.Precision => x * x,
         ResponseCurve.Smooth => x * x * (3 - 2 * x),
         ResponseCurve.Aggressive => MathF.Sqrt(x),
-        ResponseCurve.Custom => 3 * (1 - x) * (1 - x) * x * mouse.Point1 +
-            3 * (1 - x) * x * x * mouse.Point2 + x * x * x,
+        ResponseCurve.Dynamic => x * (.65f + .35f * x * x),
+        ResponseCurve.Custom => CurveKnots.Evaluate(x, mouse),
         _ => x
     };
 

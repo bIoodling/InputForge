@@ -15,9 +15,11 @@
      <TextBlock Text="InputForge" FontWeight="SemiBold" FontSize="15" VerticalAlignment="Center"/>
     </StackPanel>
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-     <ComboBox x:Name="ProfileSelector" Width="164" DisplayMemberPath="Name" Margin="0,0,16,0" AutomationProperties.Name="Profile to edit"/>
+     <ComboBox x:Name="ProfileSelector" Width="164" Margin="0,0,16,0" AutomationProperties.Name="Profile to edit">
+      <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" MaxWidth="130" ToolTip="{Binding Name}"/></DataTemplate></ComboBox.ItemTemplate>
+     </ComboBox>
      <Ellipse x:Name="ConnectionDot" Width="6" Height="6" VerticalAlignment="Center" Margin="0,0,7,0"/>
-     <TextBlock x:Name="ConnectionLabel" Foreground="{StaticResource Muted}"/>
+     <TextBlock x:Name="ConnectionLabel" VerticalAlignment="Center" Foreground="{StaticResource Muted}"/>
     </StackPanel>
    </DockPanel>
   </Border>

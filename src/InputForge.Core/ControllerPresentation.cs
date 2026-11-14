@@ -17,10 +17,18 @@ public readonly record struct OrbitPose(double Yaw, double Pitch, double Distanc
         Distance = Math.Clamp(Distance * Math.Pow(.88, steps), 4.9, 12)
     };
 
-    public OrbitPose Interpolate(OrbitPose target, double amount) => new(
-        Yaw + Math.IEEERemainder(target.Yaw - Yaw, 2 * Math.PI) * amount,
-        Pitch + (target.Pitch - Pitch) * amount,
-        Distance + (target.Distance - Distance) * amount);
+    public OrbitPose Interpolate(OrbitPose target, double amount)
+    {
+        double unwrapped = Yaw + Math.IEEERemainder(target.Yaw - Yaw, 2 * Math.PI);
+        // Interpolate each orbit axis independently to avoid introducing camera roll.
+        static double Axis(double from, double to, Vector3 axis, double amount)
+        {
+            var q = Quaternion.Slerp(Quaternion.Identity, Quaternion.CreateFromAxisAngle(axis, (float)(to - from)), (float)amount);
+            return from + 2 * Math.Atan2(Vector3.Dot(new(q.X, q.Y, q.Z), axis), q.W);
+        }
+        return new(Axis(Yaw, unwrapped, Vector3.UnitY, amount), Axis(Pitch, target.Pitch, Vector3.UnitX, amount),
+            Distance + (target.Distance - Distance) * amount);
+    }
 
     public Vector3 Position(float distanceScale = 1) => (float)(Distance * distanceScale) * new Vector3(
         (float)(Math.Sin(Yaw) * Math.Cos(Pitch)), (float)Math.Sin(Pitch),
