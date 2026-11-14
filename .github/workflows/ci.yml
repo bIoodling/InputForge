@@ -1,0 +1,14 @@
+name: Windows CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build InputForge.slnx --configuration Release
+      - run: dotnet test InputForge.slnx --configuration Release --no-build
