@@ -17,6 +17,23 @@ dotnet test InputForge.slnx -c Release --no-build
 
 ## Try the Windows interface
 
+- In **Mouse**, drag either interior curve point, use the arrow keys with the graph focused,
+  or select a point and enter X/Y coordinates. Curve edits are saved to the selected profile.
+  The two interpolation points are ordered between fixed endpoints. The graph shows the
+  normalized response stage before anti-deadzone and time-based smoothing.
+- In **Profiles**, choose **Create from preset** for Default, Precision, Smooth, Responsive,
+  Competitive, or Custom. This creates an editable copy. **Reset response** restores its starting
+  mouse settings while retaining bindings and the application association.
+- In **Testing Lab**, **Auto Camera** reveals trigger and bumper inputs, returns to the previous
+  view after the configured quiet period, and yields to manual rotation. Independent rear-paddle
+  inputs are unavailable through the Xbox 360 backend.
+
+Mouse motion is scaled by elapsed time and per-axis sensitivity, then shaped by a radial
+deadzone, acceleration, saturation, response curve, optional anti-deadzone and smoothing.
+Presets are starting points. Games can apply their own deadzones, sensitivity, polling and
+response curves, so a profile does not imply any particular aim-assist behaviour. See
+[Microsoft's XInput documentation](https://learn.microsoft.com/en-us/windows/win32/xinput/getting-started-with-xinput).
+
 - On Controller, drag the model to orbit, use the wheel to zoom, or click a control to edit its binding.
   Use **Choose control** for keyboard access and individual stick directions. The divider resizes the inspector.
   Double-click the background to reset the view.
