@@ -116,7 +116,11 @@ public partial class MainWindow : Window
             SidebarContents.Width = compact ? 72 : 258;
             SidebarStatus.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
             foreach (var item in nav.Values)
+            {
                 ((StackPanel)item.Content).Children[1].Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+                item.HorizontalContentAlignment = compact ? HorizontalAlignment.Center : HorizontalAlignment.Left;
+                item.Padding = compact ? new Thickness(0, 6, 0, 6) : new Thickness(14, 8, 10, 8);
+            }
             PageHost.Margin = new Thickness(ActualWidth < 1000 ? 20 : 30);
         };
         refresh.Start();
@@ -831,7 +835,7 @@ public partial class MainWindow : Window
     private void RefreshSignals()
     {
         bool dirty = false;
-        while (runtime.ReadSample(out var sample))
+        for (int i = 0; i < 256 && runtime.ReadSample(out var sample); i++)
         {
             if (!testing) continue;
             signalMonitor?.Append(sample);
