@@ -9,6 +9,7 @@ public sealed class InputSession
     private Vector2 delta;
     private nint window;
     private object? configuration;
+    public MouseSample LastMouseSample { get; private set; }
 
     public bool SetScope(nint nextWindow, object nextConfiguration)
     {
@@ -24,6 +25,7 @@ public sealed class InputSession
         Array.Clear(held);
         delta = default;
         mapper.Reset();
+        LastMouseSample = default;
     }
 
     public void SetButton(int input, bool down)
@@ -45,6 +47,7 @@ public sealed class InputSession
     {
         if (window == 0) return default;
         var state = mapper.Update(bindings, held, delta, mouse, seconds);
+        LastMouseSample = new(seconds, delta, mapper.MouseTarget, state.Right);
         delta = default;
         return state;
     }

@@ -66,12 +66,15 @@
   <Style TargetType="Slider">
    <Setter Property="Focusable" Value="True"/>
    <Setter Property="Height" Value="22"/>
+   <Setter Property="IsMoveToPointEnabled" Value="True"/>
    <Setter Property="Template">
     <Setter.Value>
      <ControlTemplate TargetType="Slider">
       <Grid Background="Transparent">
        <Border x:Name="SliderTrack" Height="3" Background="{StaticResource Border}" Margin="5,0" CornerRadius="1.5"/>
-       <Track x:Name="PART_Track" VerticalAlignment="Center">
+       <Track x:Name="PART_Track" VerticalAlignment="Center" Minimum="{TemplateBinding Minimum}"
+         Maximum="{TemplateBinding Maximum}" Value="{Binding Value, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+         Orientation="{TemplateBinding Orientation}" IsDirectionReversed="{TemplateBinding IsDirectionReversed}">
         <Track.DecreaseRepeatButton>
          <RepeatButton Command="Slider.DecreaseLarge">
           <RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Grid Background="Transparent"><Border Height="2" Background="{StaticResource Accent}"/></Grid></ControlTemplate></RepeatButton.Template>
@@ -82,7 +85,7 @@
           <RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Grid Background="Transparent"/></ControlTemplate></RepeatButton.Template>
          </RepeatButton>
         </Track.IncreaseRepeatButton>
-        <Track.Thumb><Thumb Width="12" Height="12"><Thumb.Template><ControlTemplate TargetType="Thumb"><Ellipse Fill="{StaticResource Accent}" Stroke="{StaticResource HoverAccent}"/></ControlTemplate></Thumb.Template></Thumb></Track.Thumb>
+        <Track.Thumb><Thumb Width="15" Height="15"><Thumb.Template><ControlTemplate TargetType="Thumb"><Ellipse Fill="{StaticResource Accent}" Stroke="{StaticResource HoverAccent}"/></ControlTemplate></Thumb.Template></Thumb></Track.Thumb>
        </Track>
       </Grid>
       <ControlTemplate.Triggers>

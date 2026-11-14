@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Interop;
 using System.Windows.Threading;
+using System.Threading.Channels;
 using InputForge.Core;
 using Nefarius.ViGEm.Client;
 using Nefarius.ViGEm.Client.Targets;
@@ -17,6 +18,8 @@ internal sealed class InputRuntime : IDisposable
 {
     private readonly Thread worker;
     private readonly InputSession input = new();
+    private readonly Channel<MouseSample> samples = Channel.CreateBounded<MouseSample>(
+        new BoundedChannelOptions(256) { FullMode = BoundedChannelFullMode.DropOldest, SingleWriter = true, SingleReader = true });
     private readonly nint ownProcess = Environment.ProcessId;
     private RuntimeConfig config;
     private RuntimeStatus status = new(default, "Starting", "Inactive", 0);
@@ -47,6 +50,7 @@ internal sealed class InputRuntime : IDisposable
 
     public void Configure(RuntimeConfig value) => Volatile.Write(ref config, value);
     public RuntimeStatus Read() => Volatile.Read(ref status);
+    public bool ReadSample(out MouseSample sample) => samples.Reader.TryRead(out sample);
 
     private void Run()
     {
@@ -191,6 +195,7 @@ internal sealed class InputRuntime : IDisposable
 
         var settings = activeProfile?.Settings ?? options.Editing;
         var output = input.Update(settings.Bindings, settings.Mouse, seconds);
+        if (scoped && options.Test) samples.Writer.TryWrite(input.LastMouseSample);
         if (pad is not null)
         {
             try

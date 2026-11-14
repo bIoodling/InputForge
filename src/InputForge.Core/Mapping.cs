@@ -55,8 +55,9 @@ public static class DefaultBindings
 public sealed class Mapper
 {
     private Vector2 filtered;
+    public Vector2 MouseTarget { get; private set; }
 
-    public void Reset() => filtered = default;
+    public void Reset() => filtered = MouseTarget = default;
 
     public ControllerState Update(IReadOnlyDictionary<Control, int> bindings, ReadOnlySpan<bool> held,
         Vector2 delta, MouseSettings mouse, float seconds)
@@ -69,9 +70,23 @@ public sealed class Mapper
         bool Has(Control control) => (buttons & (1u << (int)control)) != 0;
         float Axis(Control negative, Control positive) => (Has(positive) ? 1 : 0) - (Has(negative) ? 1 : 0);
 
+        // A stalled output tick must not turn old motion into a fresh deflection.
+        var target = ProcessMouse(delta, mouse, seconds);
+        Vector2 left = new(Axis(Control.LeftLeft, Control.LeftRight), Axis(Control.LeftDown, Control.LeftUp));
+        Vector2 right = new(Axis(Control.RightLeft, Control.RightRight), Axis(Control.RightDown, Control.RightUp));
+        return new(buttons, Limit(left), Limit(target + right), Has(Control.LeftTrigger) ? 1 : 0, Has(Control.RightTrigger) ? 1 : 0);
+    }
+
+    public Vector2 ProcessMouse(Vector2 delta, MouseSettings mouse, float seconds)
+    {
+        if (!float.IsFinite(seconds) || seconds <= 0 || seconds > .1f)
+        {
+            Reset();
+            return default;
+        }
         var scaled = new Vector2(delta.X * mouse.Horizontal, -delta.Y * mouse.Vertical) *
-            (.004f / Math.Clamp(seconds, .001f, .05f));
-        var magnitude = scaled.Length();
+            (.004f / Math.Max(seconds, .001f));
+        float magnitude = scaled.Length();
         var target = Vector2.Zero;
         if (magnitude > mouse.Deadzone)
         {
@@ -81,6 +96,7 @@ public sealed class Mapper
             if (output > 0) output = mouse.AntiDeadzone + (1 - mouse.AntiDeadzone) * output;
             target = scaled / magnitude * output;
         }
+        MouseTarget = target;
 
         float timeConstant = mouse.Filter switch
         {
@@ -94,9 +110,7 @@ public sealed class Mapper
         if (target == Vector2.Zero && filtered.LengthSquared() < .000004f)
             filtered = Vector2.Zero;
 
-        Vector2 left = new(Axis(Control.LeftLeft, Control.LeftRight), Axis(Control.LeftDown, Control.LeftUp));
-        Vector2 right = new(Axis(Control.RightLeft, Control.RightRight), Axis(Control.RightDown, Control.RightUp));
-        return new(buttons, Limit(left), Limit(filtered + right), Has(Control.LeftTrigger) ? 1 : 0, Has(Control.RightTrigger) ? 1 : 0);
+        return filtered;
     }
 
     public static float EvaluateCurve(float x, MouseSettings mouse) => mouse.Curve switch

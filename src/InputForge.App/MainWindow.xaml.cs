@@ -56,6 +56,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        SidebarVersion.Text = "InputForge " + typeof(MainWindow).Assembly.GetName().Version?.ToString(3);
         library = LoadLibrary();
         preferences = library.Profiles.Single(p => p.Id == library.Selected).Settings;
         options = LoadInterfaceOptions();
@@ -65,6 +66,7 @@ public partial class MainWindow : Window
         {
             var button = ButtonFor(name, () => Navigate(name));
             button.Content = Row(new TextBlock { Text = icon, FontFamily = new FontFamily("Segoe MDL2 Assets"), Width = 30, FontSize = 20 }, new TextBlock { Text = name, FontSize = 15 });
+            button.ToolTip = name;
             System.Windows.Automation.AutomationProperties.SetName(button, name);
             button.HorizontalContentAlignment = HorizontalAlignment.Left;
             button.MinHeight = 50;
@@ -110,7 +112,11 @@ public partial class MainWindow : Window
         if (options.StartMinimized) WindowState = WindowState.Minimized;
         SizeChanged += (_, _) =>
         {
-            Navigation.Width = ActualWidth < 1140 ? 135 : 208;
+            bool compact = ActualWidth < 1100;
+            SidebarContents.Width = compact ? 72 : 258;
+            SidebarStatus.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+            foreach (var item in nav.Values)
+                ((StackPanel)item.Content).Children[1].Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
             PageHost.Margin = new Thickness(ActualWidth < 1000 ? 20 : 30);
         };
         refresh.Start();
@@ -204,6 +210,7 @@ public partial class MainWindow : Window
 
     private void RefreshOutput()
     {
+        RefreshSignals();
         UpdatePreviewDiagnostics();
         var current = runtime.Read();
         if (page == "Testing Lab" && testing && options.AutoCamera) UpdateTestCamera(current.State);
@@ -212,6 +219,7 @@ public partial class MainWindow : Window
         last = current;
         if (dashboardProfile is not null) dashboardProfile.Text = current.Profile ?? library.Profiles.Single(p => p.Id == library.Selected).Name;
         ConnectionLabel.Text = current.Connection;
+        SidebarConnection.Text = current.Connection;
         ConnectionDot.Fill = Brush(current.Connection == "Connected" ? "Accent" : "Muted");
         if (applicationStatus is not null) applicationStatus.Text = current.Application;
         if (controllerStatus is not null) controllerStatus.Text = current.Connection;
@@ -249,6 +257,8 @@ public partial class MainWindow : Window
         mouseStickPreview = null;
         labLeft = labRight = null;
         labTriggers = labInput = labHistory = dashboardTarget = null;
+        signalMonitor = null;
+        if (name != "Testing Lab") recording = false;
         rebind = null;
         mouseChoices = null;
         localTest = null;
@@ -535,7 +545,7 @@ public partial class MainWindow : Window
         return label;
     }
 
-    private bool ShowDarkDialog(string title, UIElement body, string acceptLabel)
+    private bool ShowDarkDialog(string title, UIElement body, string acceptLabel, Func<bool>? canAccept = null)
     {
         var dialog = new Window
         {
@@ -544,7 +554,10 @@ public partial class MainWindow : Window
             WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize,
             Background = Brush("Panel"), Foreground = Brush("Text"), FontSize = 14
         };
-        var accept = ButtonFor(acceptLabel, () => dialog.DialogResult = true);
+        var accept = ButtonFor(acceptLabel, () =>
+        {
+            if (canAccept?.Invoke() != false) dialog.DialogResult = true;
+        });
         accept.IsDefault = true;
         accept.Background = Brush("Accent");
         var cancel = new Button { Content = "Cancel", IsCancel = true };
@@ -615,6 +628,12 @@ public partial class MainWindow : Window
 
     private void HandleKey(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.K && Keyboard.Modifiers == ModifierKeys.Control && !rebinding)
+        {
+            e.Handled = true;
+            ShowCommandPalette();
+            return;
+        }
         if (e.Key == Key.Escape)
         {
             if (rebinding) { CancelRebind(); Apply(); }
@@ -636,9 +655,79 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    private void ShowCommandPalette()
+    {
+        var query = new TextBox();
+        var results = new ListBox { Height = 220, DisplayMemberPath = "Label" };
+        var commands = nav.Keys.Select(name => new PaletteCommand(name, () => Navigate(name)))
+            .Concat(library.Profiles.Select(profile => new PaletteCommand("Profile · " + profile.Name, () => SelectProfile(profile))))
+            .Append(new PaletteCommand("Input diagnostics", ShowConfigurationDiagnostics))
+            .Append(new PaletteCommand("Mouse calibration", CalibrateMouse)).ToArray();
+        void Filter()
+        {
+            results.ItemsSource = commands.Where(command => command.Label.Contains(query.Text.Trim(), StringComparison.OrdinalIgnoreCase)).ToArray();
+            results.SelectedIndex = results.Items.Count > 0 ? 0 : -1;
+        }
+        query.TextChanged += (_, _) => Filter();
+        query.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key != Key.Down || results.SelectedIndex < 0) return;
+            (results.ItemContainerGenerator.ContainerFromIndex(results.SelectedIndex) as ListBoxItem)?.Focus();
+            e.Handled = true;
+        };
+        var body = Column(query, results);
+        body.Loaded += (_, _) => query.Focus();
+        Filter();
+        if (ShowDarkDialog("Commands", body, "Open") && results.SelectedItem is PaletteCommand command) command.Run();
+    }
+
+    private sealed record PaletteCommand(string Label, Action Run);
+
+    private void ShowConfigurationDiagnostics()
+    {
+        var findings = new List<string>();
+        if (!options.Capture) findings.Add("Scoped input capture is disabled in Settings.");
+        if (preferences.Application.Length == 0) findings.Add("Associate an executable in Profiles to enable virtual output.");
+        else if (!File.Exists(preferences.Application)) findings.Add("The associated executable no longer exists at its saved path.");
+        if (runtime.Read().Connection == "ViGEmBus unavailable") findings.Add("ViGEmBus connection failed during a virtual output attempt.");
+        foreach (var shared in preferences.Bindings.Where(pair => pair.Value != 0).GroupBy(pair => pair.Value).Where(group => group.Count() > 1))
+            findings.Add($"{DisplayInput(shared.Key)} is shared by {string.Join(", ", shared.Select(pair => Display(pair.Key)))}.");
+        if (observedSamples >= 30 && saturatedSamples > observedSamples / 3)
+            findings.Add($"{saturatedSamples} of {observedSamples} moving samples reached near-full stick output. Review sensitivity or raise the saturation threshold.");
+        if (peakRaw > 0) findings.Add($"Largest observed local mouse sample: {peakRaw:F0} counts.");
+        var message = Text(findings.Count == 0 ? "No issue found in the available observations." : string.Join("\n\n", findings), 13);
+        ShowDarkDialog("Configuration diagnostics", new ScrollViewer { Content = message, MaxHeight = 380, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }, "Done");
+    }
+
+    private void CompareProfiles()
+    {
+        var left = new ComboBox { ItemsSource = library.Profiles, DisplayMemberPath = "Name", SelectedItem = library.Profiles.Single(p => p.Id == library.Selected) };
+        var right = new ComboBox { ItemsSource = library.Profiles, DisplayMemberPath = "Name", SelectedIndex = library.Profiles.Count - 1 };
+        var differences = Text("", 13);
+        var apply = new ComboBox { ItemsSource = new[] { "Keep current", "Use first profile", "Use second profile" }, SelectedIndex = 0 };
+        void Compare()
+        {
+            if (left.SelectedItem is not NamedProfile first || right.SelectedItem is not NamedProfile second) return;
+            MouseSettings a = first.Settings.Mouse, b = second.Settings.Mouse;
+            differences.Text = $"Horizontal   {a.Horizontal:F2} → {b.Horizontal:F2}\nVertical   {a.Vertical:F2} → {b.Vertical:F2}\n" +
+                $"Deadzone   {a.Deadzone:P0} → {b.Deadzone:P0}\nSmoothing   {a.Filter} → {b.Filter}\n" +
+                $"Acceleration   {a.Acceleration:F2} → {b.Acceleration:F2}\nCurve   {a.Curve} → {b.Curve}\n" +
+                $"Full output reached at   {a.Saturation:P0} → {b.Saturation:P0}\nMaximum stick magnitude   100% → 100%";
+        }
+        left.SelectionChanged += (_, _) => Compare();
+        right.SelectionChanged += (_, _) => Compare();
+        Compare();
+        if (!ShowDarkDialog("Compare profiles", Column(left, right, differences, apply), "Confirm")) return;
+        if (apply.SelectedIndex == 1 && left.SelectedItem is NamedProfile p) SelectProfile(p);
+        if (apply.SelectedIndex == 2 && right.SelectedItem is NamedProfile q) SelectProfile(q);
+    }
+
     private DockPanel MousePage()
     {
         var frame = Frame("Mouse");
+        var tools = Buttons(ButtonFor("Calibrate…", CalibrateMouse), ButtonFor("Diagnostics…", ShowConfigurationDiagnostics));
+        DockPanel.SetDock(tools, Dock.Top);
+        frame.Children.Add(tools);
         var current = preferences.Mouse;
         var editor = Surface(Column(
             SliderFor("Horizontal sensitivity", .1, 4, current.Horizontal, value => ChangeMouse(preferences.Mouse with { Horizontal = value })),
@@ -725,6 +814,65 @@ public partial class MainWindow : Window
     }
 
     private StickPreview? mouseStickPreview;
+    private SignalMonitor? signalMonitor;
+    private const int MaxRecording = 1000;
+    private readonly List<MouseSample> recordingSamples = new(MaxRecording);
+    private bool recording;
+    private Button? recordButton;
+    private int saturatedSamples, observedSamples;
+    private float peakRaw;
+
+    private void RefreshSignals()
+    {
+        bool dirty = false;
+        while (runtime.ReadSample(out var sample))
+        {
+            if (!testing) continue;
+            signalMonitor?.Append(sample);
+            UpdateCalibration(sample);
+            dirty = true;
+            if (sample.Raw != default)
+            {
+                observedSamples++;
+                peakRaw = Math.Max(peakRaw, sample.Raw.Length());
+                if (sample.Output.LengthSquared() >= .99f) saturatedSamples++;
+            }
+            if (!recording || page != "Testing Lab") continue;
+            recordingSamples.Add(sample);
+            if (recordingSamples.Count == MaxRecording) StopRecording();
+        }
+        if (!testing && recording) StopRecording();
+        if (dirty) signalMonitor?.InvalidateVisual();
+        if (dirty) calibrationMonitor?.InvalidateVisual();
+    }
+
+    private void StopRecording()
+    {
+        recording = false;
+        if (recordButton is not null) recordButton.Content = "Record motion";
+    }
+
+    private void ShowReplay()
+    {
+        if (recordingSamples.Count == 0)
+        {
+            ShowDarkDialog("Local replay", Text("Record mouse movement in Testing Lab first."), "OK");
+            return;
+        }
+        var baseline = ReplayStats.Measure(recordingSamples, preferences.Mouse);
+        var choices = new ComboBox { ItemsSource = library.Profiles, DisplayMemberPath = "Name", SelectedIndex = 0 };
+        var result = Text("");
+        void Format()
+        {
+            if (choices.SelectedItem is not NamedProfile second) return;
+            var compared = ReplayStats.Measure(recordingSamples, second.Settings.Mouse);
+            result.Text = $"Edited profile: peak {baseline.Peak:P0} · mean {baseline.Mean:P0} · {baseline.Saturated} saturated\n" +
+                $"{second.Name}: peak {compared.Peak:P0} · mean {compared.Mean:P0} · {compared.Saturated} saturated";
+        }
+        choices.SelectionChanged += (_, _) => Format();
+        Format();
+        ShowDarkDialog("Local replay", Column(Text($"{recordingSamples.Count} mouse samples · processed locally", 13, "Muted"), choices, result), "Done");
+    }
 
     private void ChangeMouse(MouseSettings mouse)
     {
@@ -802,6 +950,7 @@ public partial class MainWindow : Window
         }));
         actions.Children.Add(ButtonFor("Import", ImportProfile));
         actions.Children.Add(ButtonFor("Export", ExportProfile));
+        actions.Children.Add(ButtonFor("Compare", CompareProfiles));
         foreach (FrameworkElement item in actions.Children) item.Margin = new Thickness(0,0,7,7);
 
         var editor = Surface(Column(Section("Profile details"), Text("Name", 13, "Muted"), name, ButtonFor("Rename", () =>
@@ -964,6 +1113,22 @@ public partial class MainWindow : Window
         var data = Surface(Column(Section("Controller output"), axes,
             labTriggers = Text("", 14), Section("Current input"), labInput = Text("", 13, "Muted"),
             Section("Recent activity"), labHistory = Text("", 13, "Muted"),
+            Section("Input signals"),
+            signalMonitor = new SignalMonitor { Height = 100 },
+            Text("Grey: raw magnitude (relative) · white: target · red: output", 12, "Muted"),
+            Section("Local mouse replay"),
+            Buttons(recordButton = ButtonFor("Record motion", () =>
+            {
+                if (recording) { StopRecording(); return; }
+                if (!testing)
+                {
+                    ShowDarkDialog("Local replay", Text("Start local testing before recording mouse movement."), "OK");
+                    return;
+                }
+                recordingSamples.Clear();
+                recording = true;
+                recordButton!.Content = "Stop recording";
+            }), ButtonFor("Replay", ShowReplay), ButtonFor("Clear", () => { StopRecording(); recordingSamples.Clear(); })),
             new Expander { Header = "Input diagnostics", Foreground = Brush("Text"),
                 Content = signals = Text("", 12, "Muted") }), 18);
         data.VerticalAlignment = VerticalAlignment.Top;
@@ -1168,18 +1333,27 @@ public partial class MainWindow : Window
 
     private static StackPanel SliderFor(string label, double min, double max, float value, Action<float> changed)
     {
-        var number = Text(value.ToString("F2"), 12, "Muted");
+        var number = new TextBox { Text = value.ToString("0.###"), Width = 78, Margin = new Thickness(12, 0, 0, 0) };
         var caption = new DockPanel();
         DockPanel.SetDock(number,Dock.Right);
         caption.Children.Add(number);
-        caption.Children.Add(Text(label,12));
+        caption.Children.Add(Text(label,14));
         var slider = new Slider { Minimum = min, Maximum = max, Value = value, SmallChange = .01, LargeChange = .1 };
         System.Windows.Automation.AutomationProperties.SetName(slider,label);
         slider.ValueChanged += (_, _) =>
         {
-            number.Text = slider.Value.ToString("F2");
+            number.Text = slider.Value.ToString("0.###");
             changed((float)slider.Value);
         };
+        void Commit()
+        {
+            if (double.TryParse(number.Text, out double parsed) && double.IsFinite(parsed))
+                slider.Value = Math.Clamp(parsed, min, max);
+            number.Text = slider.Value.ToString("0.###");
+        }
+        number.LostKeyboardFocus += (_, _) => Commit();
+        number.KeyDown += (_, e) => { if (e.Key == Key.Enter) { Commit(); e.Handled = true; } };
+        System.Windows.Automation.AutomationProperties.SetName(number, label + " value");
         var panel = new StackPanel();
         panel.Children.Add(caption);
         panel.Children.Add(slider);
