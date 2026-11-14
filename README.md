@@ -1,5 +1,7 @@
 # InputForge
 
+See the [0.2.0-beta.1 engine and Windows safety audit](docs/engine-beta-safety.md) for the input transfer function, emergency recovery and driver test procedure.
+
 Precision Input. Complete Control.
 
 InputForge is a Windows keyboard and mouse to virtual controller mapper in development.
