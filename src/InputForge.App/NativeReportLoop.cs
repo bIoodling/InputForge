@@ -14,6 +14,7 @@ internal static class NativeReportLoop
         var handles = new[] { timer.DangerousGetHandle() };
         int currentRate = rate();
         var deadlines = new ReportDeadline(Stopwatch.Frequency, currentRate, Stopwatch.GetTimestamp());
+        long previousMissed = 0;
         while (!stopping())
         {
             // Never let an input-message flood starve neutralisation or report deadlines.
@@ -27,13 +28,14 @@ internal static class NativeReportLoop
             long now = Stopwatch.GetTimestamp();
             if (currentRate != desiredRate)
             {
+                previousMissed += deadlines.Missed;
                 currentRate = desiredRate;
                 deadlines = new ReportDeadline(Stopwatch.Frequency, currentRate, now);
             }
 
             if (deadlines.Take(now))
             {
-                tick(now, deadlines.Missed);
+                tick(now, previousMissed + deadlines.Missed);
                 continue;
             }
 

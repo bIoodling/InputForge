@@ -38,6 +38,7 @@ internal sealed class InputRuntime : IDisposable
     private nint cachedWindow;
     private uint cachedPid;
     private string cachedPath = "";
+    private string cachedName = "";
     private long lastTick = Stopwatch.GetTimestamp(), rateStart = Stopwatch.GetTimestamp();
     private int reports, outputRate;
     private int events, inputRate;
@@ -131,6 +132,7 @@ internal sealed class InputRuntime : IDisposable
             cachedPid = pid;
             cachedWindow = foreground;
             cachedPath = "";
+            cachedName = "";
             nint process = OpenProcess(0x1000, false, pid);
             if (process != 0)
             {
@@ -138,7 +140,11 @@ internal sealed class InputRuntime : IDisposable
                 {
                     var path = new StringBuilder(32768);
                     int length = path.Capacity;
-                    if (QueryFullProcessImageName(process, 0, path, ref length)) cachedPath = path.ToString();
+                    if (QueryFullProcessImageName(process, 0, path, ref length))
+                    {
+                        cachedPath = path.ToString();
+                        cachedName = System.IO.Path.GetFileName(cachedPath);
+                    }
                 }
                 finally { CloseHandle(process); }
             }
@@ -262,7 +268,7 @@ internal sealed class InputRuntime : IDisposable
 
         var settings = activeProfile?.Settings ?? options.Editing;
         long mappingStart = Stopwatch.GetTimestamp();
-        var output = scoped ? input.Update(settings.Bindings, settings.Mouse, seconds, MotionClock(now)) : default;
+        var output = scoped ? input.Update(settings.Bindings, settings.Mouse, seconds, MotionClock(mappingStart)) : default;
         if (scoped)
         {
             long duration = Stopwatch.GetTimestamp() - mappingStart;
@@ -308,12 +314,21 @@ internal sealed class InputRuntime : IDisposable
             mappingSamples = 0;
             rateStart = now;
         }
-        var next = new RuntimeStatus(output, connection,
-            scoped ? options.Test ? "InputForge · Testing Mode" : System.IO.Path.GetFileName(settings.Application) : "Inactive",
-            pad is null ? 0 : outputRate, activeProfile?.Name, scoped && options.Test ? InputDescription() : "", scoped ? inputRate : 0,
-            scoped ? meanMapping : 0, scoped ? peakMapping : 0, missed, rejectedMotion, submitted);
-        if (next != status) Volatile.Write(ref status, next);
+        string application = !scoped ? "Inactive" : options.Test ? "InputForge · Testing Mode" : ApplicationName();
+        string description = scoped && options.Test ? InputDescription() : "";
+        int sentRate = pad is null ? 0 : outputRate, receivedRate = scoped ? inputRate : 0;
+        double mean = scoped ? meanMapping : 0, peak = scoped ? peakMapping : 0;
+        var current = status;
+        if (current.State != output || current.Connection != connection || current.Application != application ||
+            current.ReportsPerSecond != sentRate || current.Profile != activeProfile?.Name || current.Input != description ||
+            current.InputEventsPerSecond != receivedRate || current.MeanMappingMicroseconds != mean ||
+            current.PeakMappingMicroseconds != peak || current.MissedDeadlines != missed ||
+            current.RejectedMotion != rejectedMotion || current.Submitted != submitted)
+            Volatile.Write(ref status, new(output, connection, application, sentRate, activeProfile?.Name,
+                description, receivedRate, mean, peak, missed, rejectedMotion, submitted));
     }
+
+    private string ApplicationName() => cachedPath.Length == 0 ? "Inactive" : cachedName;
 
     private static long MotionClock(long ticks) => ticks / (Stopwatch.Frequency / 1000);
 
