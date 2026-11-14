@@ -30,15 +30,20 @@ dotnet test InputForge.slnx -c Release --no-build
   Select the allowed executable under Profiles, enable mapping, and focus that executable.
   ViGEmBus is a retired driver. InputForge neither distributes nor installs it.
 
-WPF renders the original procedural controller using `Viewport3D`, including WPF's software
+WPF renders Rusfort's supplied Xbox Elite Controller GLB using `Viewport3D`, including WPF's software
 rendering fallback. The viewport consumes output snapshots from the Raw Input worker and pauses
 UI polling while minimized. Mapping is disabled on startup, and capture is scoped to the chosen
 foreground executable or the explicitly enabled local test. The application stores preferences in
 `%LOCALAPPDATA%\InputForge` and makes no network requests during normal use.
 
-The geometry is an original Elite-inspired model with a contoured case, shell seam, faceted D-pad
-and rear paddles. It is an interpretation of the hardware, with no manufacturer mesh or textures.
-Rear paddles are visual only and Guide is omitted from the bindings supported by this backend.
+The asset is © Rusfort under CC BY 4.0. See [asset attribution and rendering notes](src/InputForge.App/Assets/ATTRIBUTION.md).
+The build reassembles the original binary from ordered segments and checks its SHA-256. The model
+has no authored animation tracks. Live transforms use its existing geometry. Guide and rear controls
+are not exposed as independent bindings by the Xbox 360 backend.
+
+Enable **Show developer preview diagnostics** under Settings to view active camera frame callbacks,
+mean and maximum frame intervals, process CPU, and working set. These readings are runtime measurements.
+Rendering tier describes WPF acceleration capability, not GPU utilisation.
 
 There are currently no GitHub release binaries. Test the native layout, hit targets and keyboard
 navigation at different Windows scaling settings before relying on this interface. Driver
@@ -49,5 +54,5 @@ Extract it and run `review/InputForge.App.exe` on Windows x64 with the .NET 10 D
 
 ## Licence
 
-InputForge source and original model geometry are available under GPL-3.0-or-later.
+InputForge source is available under GPL-3.0-or-later. Rusfort's GLB retains its separate CC BY 4.0 licence.
 The ViGEm managed client and its native library are third-party components distributed under MIT terms.

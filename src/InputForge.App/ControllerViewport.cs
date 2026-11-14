@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
@@ -13,19 +12,29 @@ namespace InputForge.App;
 internal sealed class ControllerViewport : Grid
 {
     private sealed record Part(GeometryModel3D Model, Material Idle, Material Selected,
-        Material Active, TranslateTransform3D Offset, Point3D Origin, AxisAngleRotation3D? Tilt);
+        Material Active, QuaternionRotation3D Rotation, TranslateTransform3D Offset, bool DoubleSided);
 
     private readonly Viewport3D viewport = new() { ClipToBounds = true };
     private readonly PerspectiveCamera camera = new() { FieldOfView = 37, NearPlaneDistance = .1, FarPlaneDistance = 60 };
     private readonly Model3DGroup models = new();
     private readonly Dictionary<GeometryModel3D, Control> hits = new();
     private readonly Dictionary<Control, List<Part>> parts = new();
-    private readonly Material shell = Finish(49, 49, 53, 24, 25);
-    private readonly Material grip = Finish(30, 30, 32, 8, 12);
-    private readonly Material metal = Finish(66, 66, 72, 48, 38);
     private OrbitPose pose = OrbitPose.Front, target = OrbitPose.Front;
     private bool orbiting;
+    internal bool IsRenderingCamera => orbiting;
     private bool paused;
+    public bool MeasureFrames { get; set; }
+    private int frames;
+    private double frameSum, frameMax;
+    private TimeSpan? previousFrame;
+    public string ReadFrameStats()
+    {
+        if (frames == 0) return "No active camera frames";
+        string result = $"{frames * 1000 / frameSum:F0} FPS  ·  {frameSum / frames:F1} ms mean  ·  {frameMax:F1} ms max";
+        frames = 0;
+        frameSum = frameMax = 0;
+        return result;
+    }
     public bool ReduceMotion { get; set; }
     private long lastFrame;
     private Point start, last;
@@ -60,203 +69,100 @@ internal sealed class ControllerViewport : Grid
         SizeChanged += (_, _) => UpdateCamera();
         IsVisibleChanged += (_, _) => { if (!IsVisible) StopOrbit(); else if (pose != target) StartOrbit(); };
         Unloaded += (_, _) => StopOrbit();
-        BuildModel();
+        Children.Add(modelStatus);
+        Loaded += LoadModel;
         Reset();
     }
 
-    private void BuildModel()
+    private bool assetLoaded;
+    private readonly TextBlock modelStatus = new()
     {
-        models.Children.Add(ControllerShell.Loft([(.84, -.48), (.93, -.42), (1, -.24), (1, -.045)], grip));
-        models.Children.Add(ControllerShell.Cap(.84, -.48, false, grip));
-        models.Children.Add(ControllerShell.GripTexture(Matte(38, 38, 40)));
-        models.Children.Add(ControllerShell.Loft([(1, -.045), (1, -.006)], Matte(19, 19, 20)));
-        models.Children.Add(ControllerShell.Loft([(1, -.006), (1, .15), (.98, .25), (.94, .34), (.89, .39)], shell));
-        models.Children.Add(ControllerShell.Cap(.89, .39, true, shell));
-        Add(new(0, .61, .41), new(.14, .14, .035), metal, label: "×");
-        Add(new(0, .17, .46), new(.07, .07, .023), grip);
+        Text = "Loading controller…", HorizontalAlignment = HorizontalAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false
+    };
 
-        foreach (var (id, x, y, text) in new (Control, double, double, string)[]
-        {
-            (Control.Y,1.04,.57,"Y"), (Control.X,.81,.33,"X"),
-            (Control.B,1.27,.33,"B"), (Control.A,1.04,.09,"A"),
-            (Control.View,-.24,.40,"−"), (Control.Menu,.24,.40,"≡")
-        })
-            Add(new(x, y, .45), new(.107, .107, .08), grip, id, label: text);
-
-        foreach (var (id, x, y) in new (Control, double, double)[]
-        {
-            (Control.LeftClick,-1.10,.38), (Control.RightClick,.52,-.29)
-        })
-        {
-            Add(new(x,y,.40), new(.225,.225,.045), metal);
-            Add(new(x,y,.49), new(.100,.100,.127), metal, id);
-            Add(new(x,y,.59), new(.167,.167,.061), grip, id);
-            Add(new(x,y,.628), new(.130,.130,.035), shell, id);
-        }
-
-        Add(new(-.55,-.29,.397), new(.266,.266,.026), grip);
-        AddDpad();
-
-        Add(new(-1.13,.79,.13), new(.43,.115,.20), shell, Control.LeftBumper, 12);
-        Add(new(1.13,.79,.13), new(.43,.115,.20), shell, Control.RightBumper, -12);
-        Add(new(-1.15,.77,-.37), new(.275,.225,.235), shell, Control.LeftTrigger, 14);
-        Add(new(1.15,.77,-.37), new(.275,.225,.235), shell, Control.RightTrigger, -14);
-        Add(new(-.99,-.29,-.52), new(.34,.077,.046), metal, angle: 31);
-        Add(new(-.75,-.05,-.51), new(.23,.068,.04), metal, angle: 29);
-        Add(new(.99,-.29,-.52), new(.34,.077,.046), metal, angle: -31);
-        Add(new(.75,-.05,-.51), new(.23,.068,.04), metal, angle: -29);
-        for (int i = -1; i <= 1; i++) Add(new(i * .068, .064, .391), new(.016,.010,.006), metal);
-        for (int i = -1; i <= 1; i++) Add(new(i * .095, -.53, -.487), new(.023,.023,.012), metal);
-    }
-
-    private void AddDpad()
+    private async void LoadModel(object sender, RoutedEventArgs e)
     {
-        var directions = new[] { Control.Right, Control.Up, Control.Left, Control.Down };
-        for (int i = 0; i < 4; i++)
+        Loaded -= LoadModel;
+        try
         {
-            var mesh = new MeshGeometry3D();
-            mesh.Positions.Add(new(.0, .0, .015));
-            double middle = Math.PI * i / 2;
-            foreach (double angle in new[] { middle - Math.PI / 4, middle - Math.PI / 8, middle, middle + Math.PI / 8, middle + Math.PI / 4 })
-                mesh.Positions.Add(new(.243 * Math.Cos(angle), .243 * Math.Sin(angle), -.035));
-            for (int vertex = 1; vertex < 5; vertex++)
+            var asset = await EliteModel.Cached.Value;
+            foreach (var part in asset.Parts)
             {
-                mesh.TriangleIndices.Add(0);
-                mesh.TriangleIndices.Add(vertex);
-                mesh.TriangleIndices.Add(vertex + 1);
+                var geometry = new GeometryModel3D(part.Mesh, part.Material);
+                if (part.DoubleSided) geometry.BackMaterial = part.Material;
+                models.Children.Add(geometry);
+                if (part.Control is not { } id) continue;
+
+                var turn = new QuaternionRotation3D();
+                var offset = new TranslateTransform3D();
+                var transform = new Transform3DGroup();
+                transform.Children.Add(new RotateTransform3D(turn, part.Pivot));
+                transform.Children.Add(offset);
+                geometry.Transform = transform;
+                hits.Add(geometry, id);
+                if (!parts.TryGetValue(id, out var group)) parts.Add(id, group = []);
+                group.Add(new(geometry, part.Material, Tint(part.Material, Color.FromRgb(105, 21, 28)),
+                    Tint(part.Material, Color.FromRgb(172, 24, 32)), turn, offset, part.DoubleSided));
             }
-            mesh.Freeze();
-            var origin = new Point3D(-.55, -.29, .445);
-            var move = new TranslateTransform3D(origin.X, origin.Y, origin.Z);
-            var model = new GeometryModel3D(mesh, metal) { Transform = move };
-            models.Children.Add(model);
-            Track(directions[i], model, metal, move, origin, null);
+            assetLoaded = true;
+            Children.Remove(modelStatus);
+            ShowState(lastState, selected);
+        }
+        catch (Exception ex)
+        {
+            modelStatus.Text = $"Controller asset could not load ({ex.GetType().Name})";
         }
     }
 
-    private static Material Finish(byte r, byte g, byte b, byte sheen, double power)
+    internal Viewport3D Viewport => viewport;
+
+    private static Material Tint(Material original, Color color)
     {
-        var material = new MaterialGroup();
-        material.Children.Add(Matte(r, g, b));
-        material.Children.Add(new SpecularMaterial(new SolidColorBrush(Color.FromRgb(sheen, sheen, sheen)), power));
-        material.Freeze();
-        return material;
+        var group = ((MaterialGroup)original).Clone();
+        group.Children.Add(new EmissiveMaterial(new SolidColorBrush(color) { Opacity = .47 }));
+        group.Freeze();
+        return group;
     }
 
-    private static DiffuseMaterial Matte(byte r, byte g, byte b)
-    {
-        var material = new DiffuseMaterial(new SolidColorBrush(Color.FromRgb(r,g,b)));
-        material.Freeze();
-        return material;
-    }
-
-    private void Add(Point3D position, Vector3D size, Material material, Control? control = null,
-        double angle = 0, int longitude = 28, string? label = null)
-    {
-        var offset = new TranslateTransform3D(position.X, position.Y, position.Z);
-        var transform = new Transform3DGroup();
-        transform.Children.Add(new ScaleTransform3D(size.X, size.Y, size.Z));
-        if (angle != 0) transform.Children.Add(new RotateTransform3D(new AxisAngleRotation3D(new Vector3D(0,0,1), angle)));
-        AxisAngleRotation3D? tilt = null;
-        if (control is Control.LeftTrigger or Control.RightTrigger)
-        {
-            tilt = new AxisAngleRotation3D(new(1, 0, 0), 0);
-            transform.Children.Add(new RotateTransform3D(tilt, 0, .13, 0));
-        }
-        transform.Children.Add(offset);
-        var model = new GeometryModel3D(Mesh(longitude), material) { Transform = transform };
-        models.Children.Add(model);
-        if (control is { } id) Track(id, model, material, offset, position, tilt);
-        if (label is not null) Label(size, label, control, offset);
-    }
-
-    private void Track(Control id, GeometryModel3D model, Material material, TranslateTransform3D offset,
-        Point3D position, AxisAngleRotation3D? tilt)
-    {
-        hits.Add(model, id);
-        if (!parts.TryGetValue(id, out var list)) parts.Add(id, list = []);
-        list.Add(new Part(model, material, Finish(92, 40, 44, 20, 25), Finish(156, 32, 35, 32, 25), offset, position, tilt));
-    }
-
-    private static readonly Dictionary<int, MeshGeometry3D> Meshes = new();
-
-    private static MeshGeometry3D Mesh(int segments)
-    {
-        if (Meshes.TryGetValue(segments, out var existing)) return existing;
-        const int rings = 14;
-        var mesh = new MeshGeometry3D();
-        for (int row = 0; row <= rings; row++)
-        {
-            double theta = Math.PI * row / rings;
-            for (int column = 0; column <= segments; column++)
-            {
-                double phi = 2 * Math.PI * column / segments;
-                var normal = new Vector3D(Math.Sin(theta) * Math.Cos(phi), Math.Cos(theta), Math.Sin(theta) * Math.Sin(phi));
-                mesh.Positions.Add(new Point3D(normal.X,normal.Y,normal.Z));
-                mesh.Normals.Add(normal);
-            }
-        }
-        for (int row = 0; row < rings; row++)
-        for (int column = 0; column < segments; column++)
-        {
-            int a = row * (segments + 1) + column;
-            int b = a + segments + 1;
-            foreach (int index in new[] { a, a+1, b, a+1, b+1, b }) mesh.TriangleIndices.Add(index);
-        }
-        mesh.Freeze();
-        Meshes.Add(segments, mesh);
-        return mesh;
-    }
-
-    private void Label(Vector3D size, string label, Control? control, TranslateTransform3D offset)
-    {
-        var drawing = new DrawingGroup();
-        using (DrawingContext dc = drawing.Open())
-        {
-            dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, 40, 40));
-            var text = new FormattedText(label, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-                new Typeface("Segoe UI Semibold"), 26, Brushes.Gainsboro, 1);
-            dc.DrawText(text, new Point((40-text.Width)/2, (40-text.Height)/2));
-        }
-        var material = new EmissiveMaterial(new DrawingBrush(drawing));
-        material.Freeze();
-        double d = size.X * .66, z = size.Z + .002;
-        var face = new MeshGeometry3D
-        {
-            Positions = new Point3DCollection
-            {
-                new(-d,-d,z), new(d,-d,z), new(d,d,z), new(-d,d,z)
-            },
-            TextureCoordinates = new PointCollection { new(0,1), new(1,1), new(1,0), new(0,0) },
-            TriangleIndices = new Int32Collection { 0,1,2,0,2,3 }
-        };
-        face.Freeze();
-        var model = new GeometryModel3D(face, material) { Transform = offset };
-        models.Children.Add(model);
-        if (control is { } id) hits.Add(model,id);
-    }
+    private ControllerState lastState;
 
     public void ShowState(ControllerState state, Control? selection)
     {
+        if (lastState == state && selected == selection && assetPresented) return;
+        lastState = state;
         selected = selection;
+        assetPresented = assetLoaded;
         foreach (var (id, group) in parts)
         {
             var motion = PartMotion.From(id, state);
-            foreach (Part part in group)
+            bool selectedStick = id switch
             {
-                var material = motion.Active ? part.Active : selected == id ? part.Selected : part.Idle;
-                if (part.Model.Material != material) part.Model.Material = material;
-                double stickTravel = Math.Max(0, part.Origin.Z - .40) * .34;
-                double x = part.Origin.X + motion.Stick.X * stickTravel;
-                double y = part.Origin.Y + motion.Stick.Y * stickTravel;
-                double z = part.Origin.Z - (part.Tilt is null ? motion.Travel * .026 : 0);
-                if (part.Offset.OffsetX != x) part.Offset.OffsetX = x;
-                if (part.Offset.OffsetY != y) part.Offset.OffsetY = y;
-                if (part.Offset.OffsetZ != z) part.Offset.OffsetZ = z;
-                if (part.Tilt is { } tilt && tilt.Angle != motion.Travel * 19) tilt.Angle = motion.Travel * 19;
+                Control.LeftClick => selection is Control.LeftUp or Control.LeftDown or Control.LeftLeft or Control.LeftRight,
+                Control.RightClick => selection is Control.RightUp or Control.RightDown or Control.RightLeft or Control.RightRight,
+                _ => false
+            };
+            Quaternion rotation = Quaternion.Identity;
+            if (motion.Stick != default)
+                rotation = new Quaternion(new Vector3D(-motion.Stick.Y, motion.Stick.X, 0), 15 * motion.Stick.Length());
+            else if (id is Control.LeftTrigger or Control.RightTrigger && motion.Travel > 0)
+                rotation = new Quaternion(new Vector3D(1, 0, 0), motion.Travel * 14);
+            double depth = id is Control.LeftTrigger or Control.RightTrigger ? 0 : -motion.Travel * .024;
+            foreach (var part in group)
+            {
+                var material = motion.Active ? part.Active : selection == id || selectedStick ? part.Selected : part.Idle;
+                if (part.Model.Material != material)
+                {
+                    part.Model.Material = material;
+                    if (part.DoubleSided) part.Model.BackMaterial = material;
+                }
+                if (part.Rotation.Quaternion != rotation) part.Rotation.Quaternion = rotation;
+                if (part.Offset.OffsetZ != depth) part.Offset.OffsetZ = depth;
             }
         }
     }
+
+    private bool assetPresented;
 
     public void Reset() => SetPose(OrbitPose.Front);
     public void Front() => SetPose(OrbitPose.Front with { Distance = target.Distance });
@@ -270,6 +176,7 @@ internal sealed class ControllerViewport : Grid
         if (!orbiting) return;
         CompositionTarget.Rendering -= RenderOrbit;
         orbiting = false;
+        previousFrame = null;
     }
 
     private void SetPose(OrbitPose next)
@@ -289,6 +196,22 @@ internal sealed class ControllerViewport : Grid
 
     private void RenderOrbit(object? sender, EventArgs e)
     {
+        if (MeasureFrames && e is RenderingEventArgs render)
+        {
+            if (render.RenderingTime == previousFrame) return;
+            if (previousFrame is { } start)
+            {
+                double interval = (render.RenderingTime - start).TotalMilliseconds;
+                if (interval > 0)
+                {
+                    frames++;
+                    frameSum += interval;
+                    frameMax = Math.Max(frameMax, interval);
+                }
+            }
+            previousFrame = render.RenderingTime;
+        }
+        if (dragging) return;
         long now = Stopwatch.GetTimestamp();
         pose = pose.Interpolate(target, 1 - Math.Exp(-27 * Stopwatch.GetElapsedTime(lastFrame, now).TotalSeconds));
         lastFrame = now;
@@ -305,7 +228,7 @@ internal sealed class ControllerViewport : Grid
     {
         double aspect = ActualHeight > 0 ? ActualWidth / ActualHeight : 1.5;
         var position = pose.Position((float)Math.Max(1, aspect / 1.68));
-        var anchor = new Point3D(0, -.15, 0);
+        var anchor = new Point3D(0, 0, 0);
         camera.Position = anchor + new Vector3D(position.X, position.Y, position.Z);
         camera.LookDirection = anchor - camera.Position;
         camera.UpDirection = new Vector3D(0,1,0);
@@ -328,8 +251,12 @@ internal sealed class ControllerViewport : Grid
         base.OnMouseMove(e);
         if (!IsMouseCaptured || e.LeftButton != MouseButtonState.Pressed) return;
         Point now = e.GetPosition(this);
-        dragging |= (now - start).Length >= 5;
-        if (dragging) SetPose(target.Drag(now.X-last.X, now.Y-last.Y));
+        if (!dragging && (now - start).Length < 5) return;
+        dragging = true;
+        target = pose = target.Drag(now.X-last.X, now.Y-last.Y);
+        if (MeasureFrames) StartOrbit();
+        else StopOrbit();
+        UpdateCamera();
         last = now;
     }
 
@@ -337,9 +264,10 @@ internal sealed class ControllerViewport : Grid
     {
         base.OnMouseLeftButtonUp(e);
         if (!IsMouseCaptured) return;
+        bool wasDragging = dragging;
         ReleaseMouseCapture();
         Point position = e.GetPosition(viewport);
-        if (!dragging && (e.GetPosition(this) - start).Length < 5)
+        if (!wasDragging && (e.GetPosition(this) - start).Length < 5)
         {
             RayMeshGeometry3DHitTestResult? hit = null;
             VisualTreeHelper.HitTest(viewport, null, result =>
@@ -353,6 +281,13 @@ internal sealed class ControllerViewport : Grid
             else if (clicks == 2 && hit is null) Reset();
         }
         e.Handled = true;
+    }
+
+    protected override void OnLostMouseCapture(MouseEventArgs e)
+    {
+        base.OnLostMouseCapture(e);
+        if (dragging) StopOrbit();
+        dragging = false;
     }
 
     protected override void OnMouseWheel(MouseWheelEventArgs e)

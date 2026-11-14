@@ -28,7 +28,8 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, Button> nav = new();
     private Preferences preferences;
     private ProfileLibrary library;
-    private sealed record InterfaceOptions(bool ReduceMotion = false, bool Capture = true, string StartPage = "Dashboard");
+    private sealed record InterfaceOptions(bool ReduceMotion = false, bool Capture = true, string StartPage = "Dashboard",
+        bool PreviewDiagnostics = false);
     private InterfaceOptions options;
     private bool enabled, testing;
     private readonly BindingSelection bindingSelection = new();
@@ -80,6 +81,7 @@ public partial class MainWindow : Window
             else { model.ResumeOrbit(); RefreshOutput(); refresh.Start(); }
         };
         model.ReduceMotion = options.ReduceMotion;
+        model.MeasureFrames = options.PreviewDiagnostics;
         Navigate(options.StartPage is { } start && nav.ContainsKey(start) ? start : "Dashboard");
         SizeChanged += (_, _) => Navigation.Width = ActualWidth < 1120 ? 126 : 216;
         refresh.Start();
@@ -155,6 +157,7 @@ public partial class MainWindow : Window
 
     private void RefreshOutput()
     {
+        UpdatePreviewDiagnostics();
         var current = runtime.Read();
         if (current == last) return;
         last = current;
@@ -203,6 +206,7 @@ public partial class MainWindow : Window
         mouseChoices = null;
         localTest = null;
         localTestLabel = null;
+        diagnosticsText = null;
         foreach (var (key, item) in nav)
         {
             item.Background = Brush(key == page ? "Active" : "Sidebar");
@@ -257,6 +261,12 @@ public partial class MainWindow : Window
         var bottom = new StackPanel();
         bottom.Children.Add(views);
         bottom.Children.Add(localTestLabel);
+        if (options.PreviewDiagnostics)
+        {
+            diagnosticsText = Text("", 12, "Muted");
+            diagnosticsText.HorizontalAlignment = HorizontalAlignment.Center;
+            bottom.Children.Add(diagnosticsText);
+        }
         Grid.SetRow(bottom, 1);
         scene.Children.Add(bottom);
         return new Border { Child = scene };
@@ -291,14 +301,7 @@ public partial class MainWindow : Window
         overview.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         overview.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var stage = new Grid { Height = 294 };
-        stage.RowDefinitions.Add(new RowDefinition());
-        stage.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         stage.Children.Add(model);
-        var note = Text("Interim controller model", 12, "Muted");
-        note.Margin = new Thickness(0, 5, 0, 0);
-        note.HorizontalAlignment = HorizontalAlignment.Center;
-        Grid.SetRow(note, 1);
-        stage.Children.Add(note);
         var preview = Surface(stage, 10);
         preview.VerticalAlignment = VerticalAlignment.Top;
         preview.Margin = new Thickness(0,0,20,0);
@@ -312,8 +315,14 @@ public partial class MainWindow : Window
             StatusCell("Controller", controllerStatus = Text("", 13, "Muted")),
             StatusCell("Mapping", dashboardMapping = Text("", 13, "Muted")),
             StatusCell("Recent input", dashboardActivity = Text("No input this session", 13, "Muted"))), 18);
-        var details = Column(summary, ButtonFor("Controller", () => Navigate("Controller")),
-            ButtonFor("Mouse", () => Navigate("Mouse")), ButtonFor("Profiles", () => Navigate("Profiles")));
+        var shortcuts = new WrapPanel();
+        foreach (string destination in new[] { "Controller", "Mouse", "Profiles" })
+        {
+            var button = ButtonFor(destination, () => Navigate(destination));
+            button.Margin = new Thickness(0, 0, 8, 6);
+            shortcuts.Children.Add(button);
+        }
+        var details = Column(summary, shortcuts);
         var right = new ScrollViewer { Content = details, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         Grid.SetColumn(right, 1);
@@ -322,7 +331,7 @@ public partial class MainWindow : Window
         return frame;
     }
 
-    private TextBlock? dashboardProfile, dashboardMapping, dashboardActivity;
+    private TextBlock? dashboardProfile, dashboardMapping, dashboardActivity, mouseOutput;
     private string? recentInput;
     private DockPanel ControllerPage() => ControllerWorkspace("Controller");
 
@@ -813,6 +822,13 @@ public partial class MainWindow : Window
     {
         var frame = Frame("Settings");
         var motion = new CheckBox { Content = "Reduce camera animation", Foreground = Brush("Text"), IsChecked = options.ReduceMotion };
+        var diagnostics = new CheckBox { Content = "Show developer preview diagnostics", Foreground = Brush("Text"),
+            IsChecked = options.PreviewDiagnostics };
+        diagnostics.Click += (_, _) =>
+        {
+            model.MeasureFrames = diagnostics.IsChecked == true;
+            SetInterfaceOptions(options with { PreviewDiagnostics = model.MeasureFrames });
+        };
         motion.Click += (_, _) =>
         {
             model.ReduceMotion = motion.IsChecked == true;
@@ -830,7 +846,7 @@ public partial class MainWindow : Window
         {
             if (startup.SelectedItem is string name) SetInterfaceOptions(options with { StartPage = name });
         };
-        var body = Surface(Column(Text("Appearance", 16), motion,
+        var body = Surface(Column(Text("Appearance", 16), motion, diagnostics,
             Text("Startup", 16), Row(Text("Open on launch", 13, "Muted"), startup),
             Text("Input and safety", 16), capture, Text("Mapping starts off. Escape disables mapping and local testing.", 13, "Muted"),
             Text("Controller backend", 16), controllerStatus = Text(runtime.Read().Connection, 13, "Muted"),
@@ -838,6 +854,26 @@ public partial class MainWindow : Window
             notice = Text(persistenceError ?? "", 13, "Muted")), 18);
         frame.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         return frame;
+    }
+
+    private readonly System.Diagnostics.Process currentProcess = System.Diagnostics.Process.GetCurrentProcess();
+    private TextBlock? diagnosticsText;
+    private TimeSpan lastCpu;
+    private long diagnosticsAt;
+
+    private void UpdatePreviewDiagnostics()
+    {
+        if (diagnosticsText is null) return;
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        double elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(diagnosticsAt, now).TotalSeconds;
+        if (elapsed < 1) return;
+        currentProcess.Refresh();
+        TimeSpan cpu = currentProcess.TotalProcessorTime;
+        string load = diagnosticsAt == 0 ? "—" :
+            $"{100 * (cpu-lastCpu).TotalSeconds / (elapsed*Environment.ProcessorCount):F1}%";
+        lastCpu = cpu;
+        diagnosticsAt = now;
+        diagnosticsText.Text = $"{model.ReadFrameStats()}  |  CPU {load}  ·  RAM {currentProcess.WorkingSet64 / 1048576:F0} MiB  ·  Rendering tier {RenderCapability.Tier >> 16}";
     }
 
     private void SetInterfaceOptions(InterfaceOptions value)
@@ -944,6 +980,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         refresh.Stop();
+        currentProcess.Dispose();
         delayedSave.Stop();
         SavePreferences();
         runtime.Dispose();
