@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.IO;
 using InputForge.Core;
 using Xunit;
 
