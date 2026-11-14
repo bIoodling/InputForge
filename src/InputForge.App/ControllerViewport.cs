@@ -26,6 +26,7 @@ internal sealed class ControllerViewport : Grid
     private OrbitPose pose = OrbitPose.Front, target = OrbitPose.Front;
     private bool orbiting;
     private bool paused;
+    public bool ReduceMotion { get; set; }
     private long lastFrame;
     private Point start, last;
     private bool dragging;
@@ -274,7 +275,7 @@ internal sealed class ControllerViewport : Grid
     private void SetPose(OrbitPose next)
     {
         target = next;
-        if (IsVisible && SystemParameters.ClientAreaAnimation) StartOrbit();
+        if (IsVisible && !ReduceMotion && SystemParameters.ClientAreaAnimation) StartOrbit();
         else { pose = target; UpdateCamera(); }
     }
 

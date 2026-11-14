@@ -7,6 +7,30 @@ namespace InputForge.Tests;
 public class WorkspaceTests
 {
     [Fact]
+    public void ProfileLibraryRetainsLegacySettingsAndMatchesOnlyAssociatedApplication()
+    {
+        var legacy = Preferences.Create() with { Application = @"C:\Games\Sample.exe" };
+        var library = ProfileLibrary.FromLegacy(legacy);
+        var other = new NamedProfile(Guid.NewGuid(), "Another profile", Preferences.Create());
+        var combined = new ProfileLibrary(other.Id, [..library.Profiles, other]);
+        Assert.True(combined.IsValid());
+        Assert.Equal(library.Selected, combined.ForApplication(@"c:\games\sample.exe")!.Id);
+        Assert.Null(combined.ForApplication(@"C:\Games\Other.exe"));
+        Assert.Null(combined.ForApplication(""));
+        Assert.False((combined with { Profiles = [..combined.Profiles, new NamedProfile(Guid.NewGuid(), "Duplicate", legacy)] }).IsValid());
+
+        string path = Path.Combine(AppContext.BaseDirectory, Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            ProfileStore.WriteLibrary(path, combined);
+            var read = ProfileStore.ReadLibrary(path);
+            Assert.Equal(other.Id, read.Selected);
+            Assert.Equal(legacy.Mouse, read.ForApplication(legacy.Application)!.Settings.Mouse);
+            Assert.Equal(legacy.Bindings[Control.B], read.ForApplication(legacy.Application)!.Settings.Bindings[Control.B]);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+    [Fact]
     public void BindingListAndModelShareOneSelectionWithoutRepeatNotifications()
     {
         var selection = new BindingSelection();

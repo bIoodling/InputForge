@@ -20,11 +20,16 @@ public partial class MainWindow : Window
 {
     private static readonly string SettingsPath = System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "InputForge", "preferences.json");
+    private static readonly string LibraryPath = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsPath)!, "profiles.json");
+    private static readonly string OptionsPath = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsPath)!, "interface.json");
     private readonly ControllerViewport model = new();
     private readonly InputRuntime runtime;
     private readonly DispatcherTimer refresh;
     private readonly Dictionary<string, Button> nav = new();
     private Preferences preferences;
+    private ProfileLibrary library;
+    private sealed record InterfaceOptions(bool ReduceMotion = false, bool Capture = true, string StartPage = "Dashboard");
+    private InterfaceOptions options;
     private bool enabled, testing;
     private readonly BindingSelection bindingSelection = new();
     private Control Selected => bindingSelection.Current;
@@ -47,7 +52,9 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        preferences = LoadPreferences();
+        library = LoadLibrary();
+        preferences = library.Profiles.Single(p => p.Id == library.Selected).Settings;
+        options = LoadInterfaceOptions();
         runtime = new InputRuntime(Config());
         foreach (var (name, icon) in new[] { ("Dashboard", "\uE80F"), ("Controller", "\uE7FC"), ("Mouse", "\uE962"),
             ("Profiles", "\uE8B7"), ("Testing Lab", "\uE9D9"), ("Settings", "\uE713") })
@@ -72,52 +79,77 @@ public partial class MainWindow : Window
             if (WindowState == WindowState.Minimized) { refresh.Stop(); model.PauseOrbit(); }
             else { model.ResumeOrbit(); RefreshOutput(); refresh.Start(); }
         };
-        Navigate("Dashboard");
-        SizeChanged += (_, _) => Navigation.Width = ActualWidth < 1030 ? 126 : 195;
+        model.ReduceMotion = options.ReduceMotion;
+        Navigate(options.StartPage is { } start && nav.ContainsKey(start) ? start : "Dashboard");
+        SizeChanged += (_, _) => Navigation.Width = ActualWidth < 1120 ? 126 : 216;
         refresh.Start();
     }
 
-    private Preferences LoadPreferences()
+    private ProfileLibrary LoadLibrary()
     {
         try
         {
-            if (File.Exists(SettingsPath))
-            {
-                return ProfileStore.Read(SettingsPath);
-            }
+            if (File.Exists(LibraryPath)) return ProfileStore.ReadLibrary(LibraryPath);
+            if (File.Exists(SettingsPath)) return ProfileLibrary.FromLegacy(ProfileStore.Read(SettingsPath));
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
         {
             persistenceError = "Preferences could not be read. Defaults are loaded.";
         }
-        return Preferences.Create();
+        return ProfileLibrary.FromLegacy(Preferences.Create());
+    }
+
+    private static InterfaceOptions LoadInterfaceOptions()
+    {
+        try
+        {
+            return File.Exists(OptionsPath)
+                ? JsonSerializer.Deserialize<InterfaceOptions>(File.ReadAllText(OptionsPath)) ?? new()
+                : new();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return new(); }
     }
 
     private void SavePreferences()
     {
         try
         {
-            ProfileStore.Write(SettingsPath, preferences);
+            ProfileStore.WriteLibrary(LibraryPath, library);
             persistenceError = null;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
         {
             persistenceError = "InputForge could not save preferences.";
             if (notice is not null) { notice.Text = persistenceError; notice.Visibility = Visibility.Visible; }
         }
     }
 
-    private RuntimeConfig Config() => new(!rebinding && enabled, !rebinding && testing, preferences.Application, preferences.Bindings, preferences.Mouse);
+    private RuntimeConfig Config() => new(!rebinding && enabled, !rebinding && testing, options.Capture, library, preferences);
+
+    private void CommitProfileSettings()
+    {
+        library = library with
+        {
+            Profiles = library.Profiles.Select(p => p.Id == library.Selected ? p with { Settings = preferences } : p).ToList()
+        };
+    }
+
     private void Apply()
     {
         model.TestingInput = testing || rebinding;
         runtime.Configure(Config());
         Toggle.Content = enabled ? "Mapping on" : "Mapping off";
         Toggle.Background = Brush(enabled ? "Active" : "Elevated");
-        if (localTest is not null) localTest.Content = testing ? "Stop input test" : "Test inputs";
+        if (localTest is not null)
+        {
+            localTest.Content = testing ? "Stop input test" : "Test inputs";
+            localTest.IsEnabled = options.Capture;
+        }
+        Toggle.IsEnabled = options.Capture;
         if (localTestLabel is not null) localTestLabel.Text = testing ? "Testing Mode" : "";
-        ProfileLabel.Text = string.IsNullOrEmpty(preferences.Application)
-            ? "Default profile" : System.IO.Path.GetFileNameWithoutExtension(preferences.Application);
+        ProfileLabel.Text = runtime.Read().Profile ?? library.Profiles.Single(p => p.Id == library.Selected).Name;
+        if (dashboardProfile is not null) dashboardProfile.Text = ProfileLabel.Text;
+        if (dashboardMapping is not null) dashboardMapping.Text = testing ? "Testing Mode" : enabled ? "Enabled" : "Disabled";
         last = null;
     }
 
@@ -126,29 +158,39 @@ public partial class MainWindow : Window
         var current = runtime.Read();
         if (current == last) return;
         last = current;
+        ProfileLabel.Text = current.Profile ?? library.Profiles.Single(p => p.Id == library.Selected).Name;
+        if (dashboardProfile is not null) dashboardProfile.Text = ProfileLabel.Text;
         ConnectionLabel.Text = current.Connection;
         ConnectionDot.Fill = Brush(current.Connection == "Connected" ? "Accent" : "Muted");
         if (applicationStatus is not null) applicationStatus.Text = current.Application;
         if (controllerStatus is not null) controllerStatus.Text = current.Connection;
-        if (previewStatus is not null)
+        if (previewStatus is not null || dashboardActivity is not null)
         {
             string inputs = string.Join(" · ", Enum.GetValues<Control>().Where(id => (int)id <= (int)Control.RightClick && current.State.IsPressed(id)).Select(Glyph));
             if (current.State.Left.LengthSquared() > .0025f) inputs += (inputs.Length == 0 ? "" : " · ") + "LS";
             if (current.State.Right.LengthSquared() > .0025f) inputs += (inputs.Length == 0 ? "" : " · ") + "RS";
-            previewStatus.Text = inputs.Length == 0 ? "Neutral" : inputs;
-            previewStatus.ToolTip = previewStatus.Text;
+            if (inputs.Length > 0) recentInput = inputs;
+            if (dashboardActivity is not null) dashboardActivity.Text = recentInput ?? "No input this session";
+            if (previewStatus is not null)
+            {
+                previewStatus.Text = inputs.Length == 0 ? "Neutral" : inputs;
+                previewStatus.ToolTip = previewStatus.Text;
+            }
         }
         if (signals is not null)
             signals.Text = $"Left    {current.State.Left.X,6:F2}  {current.State.Left.Y,6:F2}\n" +
                 $"Right   {current.State.Right.X,6:F2}  {current.State.Right.Y,6:F2}\n" +
                 $"LT      {current.State.LT:F2}    RT    {current.State.RT:F2}\n" +
-                $"Reports sent   {current.ReportsPerSecond}/s";
-        if (model.IsVisible) model.ShowState(current.State, page is "Dashboard" or "Controller" ? Selected : null);
+                $"Input events   {current.InputEventsPerSecond}/s    Reports sent   {current.ReportsPerSecond}/s\n" +
+                $"Latest event   {(current.Input.Length == 0 ? "—" : current.Input)}";
+        if (model.IsVisible) model.ShowState(current.State, page == "Controller" ? Selected : null);
+        if (mouseOutput is not null)
+            mouseOutput.Text = $"Right stick  X {current.State.Right.X:+0.00;-0.00;0.00}  Y {current.State.Right.Y:+0.00;-0.00;0.00}";
     }
 
     private void Navigate(string name)
     {
-        if (testing && name is not ("Dashboard" or "Controller" or "Testing Lab")) testing = false;
+        if (testing && name is not ("Dashboard" or "Controller" or "Testing Lab" or "Mouse")) testing = false;
         CancelRebind();
         if (model.Parent is Panel oldParent) oldParent.Children.Remove(model);
         page = name;
@@ -156,6 +198,7 @@ public partial class MainWindow : Window
         bindingList = null;
         bindingRows.Clear();
         selectedBadge = controllerStatus = previewStatus = null;
+        dashboardProfile = dashboardMapping = dashboardActivity = mouseOutput = null;
         rebind = null;
         mouseChoices = null;
         localTest = null;
@@ -181,9 +224,9 @@ public partial class MainWindow : Window
     private DockPanel Frame(string title)
     {
         var layout = new DockPanel();
-        var heading = Text(title, 17);
+        var heading = Text(title, 26);
         heading.FontWeight = FontWeights.SemiBold;
-        heading.Margin = new Thickness(0,0,0,14);
+        heading.Margin = new Thickness(0,0,0,20);
         DockPanel.SetDock(heading, Dock.Top);
         layout.Children.Add(heading);
         return layout;
@@ -192,7 +235,7 @@ public partial class MainWindow : Window
     private Border Surface(UIElement child, double inset = 14) => new()
     {
         Background = Brush("Panel"), Padding = new Thickness(inset),
-        CornerRadius = new CornerRadius(9), Child = child
+        CornerRadius = new CornerRadius(10), Child = child
     };
 
     private Border Scene()
@@ -239,9 +282,48 @@ public partial class MainWindow : Window
         Navigate(page);
     }
 
-    private GridLength inspectorWidth = new(455);
+    private GridLength inspectorWidth = new(430);
 
-    private DockPanel Dashboard() => ControllerWorkspace("Dashboard");
+    private DockPanel Dashboard()
+    {
+        var frame = Frame("Dashboard");
+        var overview = new Grid();
+        overview.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        overview.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var stage = new Grid { Height = 294 };
+        stage.RowDefinitions.Add(new RowDefinition());
+        stage.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        stage.Children.Add(model);
+        var note = Text("Interim controller model", 12, "Muted");
+        note.Margin = new Thickness(0, 5, 0, 0);
+        note.HorizontalAlignment = HorizontalAlignment.Center;
+        Grid.SetRow(note, 1);
+        stage.Children.Add(note);
+        var preview = Surface(stage, 10);
+        preview.VerticalAlignment = VerticalAlignment.Top;
+        preview.Margin = new Thickness(0,0,20,0);
+        overview.Children.Add(preview);
+
+        var description = Text("Application status", 16);
+        description.FontWeight = FontWeights.SemiBold;
+        var summary = Surface(Column(description,
+            StatusCell("Profile", dashboardProfile = Text("", 13, "Muted")),
+            StatusCell("Application", applicationStatus = Text("", 13, "Muted")),
+            StatusCell("Controller", controllerStatus = Text("", 13, "Muted")),
+            StatusCell("Mapping", dashboardMapping = Text("", 13, "Muted")),
+            StatusCell("Recent input", dashboardActivity = Text("No input this session", 13, "Muted"))), 18);
+        var details = Column(summary, ButtonFor("Controller", () => Navigate("Controller")),
+            ButtonFor("Mouse", () => Navigate("Mouse")), ButtonFor("Profiles", () => Navigate("Profiles")));
+        var right = new ScrollViewer { Content = details, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        Grid.SetColumn(right, 1);
+        overview.Children.Add(right);
+        frame.Children.Add(overview);
+        return frame;
+    }
+
+    private TextBlock? dashboardProfile, dashboardMapping, dashboardActivity;
+    private string? recentInput;
     private DockPanel ControllerPage() => ControllerWorkspace("Controller");
 
     private DockPanel ControllerWorkspace(string title)
@@ -323,9 +405,9 @@ public partial class MainWindow : Window
         mouseChoices.Visibility = Visibility.Collapsed;
         notice = Text(persistenceError ?? "", 11, "Muted");
         notice.Visibility = string.IsNullOrEmpty(notice.Text) ? Visibility.Collapsed : Visibility.Visible;
-        var card = Surface(Column(heading, Text("Binding", 12, "Muted"), currentBinding,
-            Row(rebind, clear, reset), mouseChoices, notice), 14);
-        card.Margin = new Thickness(0, 0, 0, 10);
+        var card = Surface(Column(heading, Text("Binding", 13, "Muted"), currentBinding,
+            Row(rebind, clear, reset), mouseChoices, notice), 18);
+        card.Margin = new Thickness(0, 0, 0, 16);
         DockPanel.SetDock(card, Dock.Top);
         panel.Children.Add(card);
 
@@ -337,6 +419,7 @@ public partial class MainWindow : Window
         };
         ScrollViewer.SetHorizontalScrollBarVisibility(list, ScrollBarVisibility.Disabled);
         ScrollViewer.SetVerticalScrollBarVisibility(list, ScrollBarVisibility.Auto);
+        ScrollViewer.SetCanContentScroll(list, false);
         System.Windows.Automation.AutomationProperties.SetName(list, "Controller bindings");
         bindingList = list;
         foreach (Control id in Enum.GetValues<Control>())
@@ -348,8 +431,8 @@ public partial class MainWindow : Window
             var glyph = new Border { BorderBrush = Brush("Muted"), BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(5), Padding = new Thickness(5, 1, 5, 1),
                 HorizontalAlignment = HorizontalAlignment.Left, Child = Text(Glyph(id), 11) };
-            var name = Text(Display(id), 12);
-            var value = Text(DisplayInput(preferences.Bindings[id]), 12, "Muted");
+            var name = Text(Display(id), 13);
+            var value = Text(DisplayInput(preferences.Bindings[id]), 13, "Muted");
             value.TextAlignment = TextAlignment.Right;
             value.Margin = new Thickness(4,0,8,0);
             foreach (var text in new[] { name, value })
@@ -401,6 +484,7 @@ public partial class MainWindow : Window
         string current = DisplayInput(preferences.Bindings[id]);
         if (binding is not null) binding.Text = current;
         if (row.Value is not null) row.Value.Text = current;
+        if (page == "Dashboard") { Navigate("Controller"); return; }
         model.ShowState(runtime.Read().State, id);
     }
 
@@ -451,6 +535,7 @@ public partial class MainWindow : Window
     {
         var bindings = new Dictionary<Control,int>(preferences.Bindings) { [Selected] = key };
         preferences = preferences with { Bindings = bindings };
+        CommitProfileSettings();
         SavePreferences();
         CancelRebind();
         PresentSelection(Selected);
@@ -493,6 +578,12 @@ public partial class MainWindow : Window
         DockPanel.SetDock(tabs, Dock.Top);
         tabs.Margin = new Thickness(0,0,0,12);
         frame.Children.Add(tabs);
+        mouseOutput = Text("", 13, "Muted");
+        var test = MouseTestButton();
+        var output = Row(test, mouseOutput);
+        output.Margin = new Thickness(0,16,0,0);
+        DockPanel.SetDock(output, Dock.Bottom);
+        frame.Children.Add(output);
         UIElement content;
         var mouse = preferences.Mouse;
         switch (mouseTab)
@@ -527,6 +618,8 @@ public partial class MainWindow : Window
                 break;
         }
         frame.Children.Add(Surface(content));
+        last = null;
+        RefreshOutput();
         return frame;
     }
 
@@ -544,6 +637,7 @@ public partial class MainWindow : Window
     private void ChangeMouse(MouseSettings mouse)
     {
         preferences = preferences with { Mouse = mouse };
+        CommitProfileSettings();
         Apply();
         delayedSave.Stop();
         delayedSave.Start();
@@ -551,37 +645,166 @@ public partial class MainWindow : Window
 
     private readonly DispatcherTimer delayedSave = new() { Interval = TimeSpan.FromMilliseconds(350) };
 
+    private Button MouseTestButton()
+    {
+        var button = ButtonFor(testing ? "Stop input test" : "Test inputs", () =>
+        {
+            testing = !testing;
+            Apply();
+        });
+        localTest = button;
+        return button;
+    }
+
     private DockPanel Profiles()
     {
         var frame = Frame("Profiles");
-        var path = Text(preferences.Application.Length == 0 ? "No executable selected" : preferences.Application, 12, "Muted");
+        var active = library.Profiles.Single(p => p.Id == library.Selected);
+        var list = new ListBox { Background = Brush("Panel"), Foreground = Brush("Text"),
+            BorderThickness = new Thickness(0), DisplayMemberPath = nameof(NamedProfile.Name), ItemsSource = library.Profiles,
+            ItemContainerStyle = (Style)FindResource("BindingRow"), SelectedItem = active, MinWidth = 150 };
+        list.SelectionChanged += (_, _) =>
+        {
+            if (list.SelectedItem is NamedProfile profile) SelectProfile(profile);
+        };
+        var name = new TextBox { Text = active.Name, MaxLength = 64, Background = Brush("Elevated"),
+            Foreground = Brush("Text"), BorderBrush = Brush("Border"), Padding = new Thickness(8) };
+        System.Windows.Automation.AutomationProperties.SetName(name, "Profile name");
+        var path = Text(preferences.Application.Length == 0 ? "No executable associated" : preferences.Application, 13, "Muted");
         var browse = ButtonFor("Choose executable", () =>
         {
             var picker = new OpenFileDialog { Filter = "Windows applications (*.exe)|*.exe", CheckFileExists = true };
             if (picker.ShowDialog(this) != true) return;
+            if (library.ForApplication(picker.FileName) is { } conflict && conflict.Id != active.Id)
+            {
+                ProfileError($"Already associated with {conflict.Name}.");
+                return;
+            }
             preferences = preferences with { Application = picker.FileName };
-            SavePreferences();
-            Navigate(page);
+            CommitProfileSettings();
+            UpdateProfiles(library);
         });
-        frame.Children.Add(Surface(Column(Text("Allowed application", 15), path,
+        var actions = new WrapPanel();
+        actions.Children.Add(ButtonFor("Create", () => AddProfile("New profile", Preferences.Create())));
+        actions.Children.Add(ButtonFor("Duplicate", () => AddProfile((active.Name.Length > 59 ? active.Name[..59] : active.Name) + " copy",
+            preferences with { Application = "", Bindings = new(preferences.Bindings) })));
+        actions.Children.Add(ButtonFor("Delete", () =>
+        {
+            if (library.Profiles.Count == 1) { ProfileError("Keep at least one profile."); return; }
+            if (MessageBox.Show(this, $"Delete {active.Name}?", "Delete profile", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                return;
+            var remaining = library.Profiles.Where(p => p.Id != active.Id).ToList();
+            UpdateProfiles(new(remaining[0].Id, remaining));
+        }));
+        actions.Children.Add(ButtonFor("Import", ImportProfile));
+        actions.Children.Add(ButtonFor("Export", ExportProfile));
+        foreach (FrameworkElement item in actions.Children) item.Margin = new Thickness(0,0,7,7);
+
+        var editor = Surface(Column(Text("Profile name", 16), name, ButtonFor("Rename", () =>
+        {
+            string next = name.Text.Trim();
+            if (next.Length == 0) { ProfileError("Enter a profile name."); return; }
+            UpdateProfiles(library with { Profiles = library.Profiles.Select(p => p.Id == active.Id ? p with { Name = next } : p).ToList() });
+        }), Text("Application association", 16), path,
             Row(browse, ButtonFor("Clear", () =>
             {
                 preferences = preferences with { Application = "" };
-                SavePreferences();
-                Navigate(page);
-            })), notice = Text(persistenceError ?? "",11,"Muted"))));
+                CommitProfileSettings();
+                UpdateProfiles(library);
+            })),
+            Text("Mapping switches profiles when an associated executable gains focus.", 12, "Muted"),
+            notice = Text(persistenceError ?? "", 12, "Muted")), 18);
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
+        var sidebar = new DockPanel { Margin = new Thickness(0,0,18,0) };
+        DockPanel.SetDock(actions, Dock.Top);
+        sidebar.Children.Add(actions);
+        sidebar.Children.Add(Surface(list, 6));
+        grid.Children.Add(sidebar);
+        var scroll = new ScrollViewer { Content = editor, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        Grid.SetColumn(scroll, 1);
+        grid.Children.Add(scroll);
+        frame.Children.Add(grid);
         return frame;
+    }
+
+    private void ProfileError(string message)
+    {
+        if (notice is null) return;
+        notice.Text = message;
+        notice.Visibility = Visibility.Visible;
+    }
+
+    private void SelectProfile(NamedProfile profile)
+    {
+        if (profile.Id != library.Selected) UpdateProfiles(library with { Selected = profile.Id });
+    }
+
+    private void UpdateProfiles(ProfileLibrary value)
+    {
+        library = value;
+        preferences = value.Profiles.Single(p => p.Id == value.Selected).Settings;
+        SavePreferences();
+        Navigate("Profiles");
+    }
+
+    private void AddProfile(string name, Preferences settings)
+    {
+        var profile = new NamedProfile(Guid.NewGuid(), name, settings);
+        UpdateProfiles(new(profile.Id, [..library.Profiles, profile]));
+    }
+
+    private void ImportProfile()
+    {
+        var dialog = new OpenFileDialog { Filter = "InputForge profile (*.json)|*.json", CheckFileExists = true };
+        if (dialog.ShowDialog(this) != true) return;
+        try
+        {
+            var imported = ProfileStore.Read(dialog.FileName);
+            if (library.ForApplication(imported.Application) is not null)
+            {
+                ProfileError("That executable already has a profile. Clear its association before importing.");
+                return;
+            }
+            string name = System.IO.Path.GetFileNameWithoutExtension(dialog.FileName).Trim();
+            AddProfile(name.Length == 0 ? "Imported profile" : name[..Math.Min(64,name.Length)], imported);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+        {
+            ProfileError("The profile could not be imported.");
+        }
+    }
+
+    private void ExportProfile()
+    {
+        var dialog = new SaveFileDialog { Filter = "InputForge profile (*.json)|*.json", AddExtension = true, DefaultExt = ".json" };
+        if (dialog.ShowDialog(this) != true) return;
+        if (string.Equals(dialog.FileName, LibraryPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(dialog.FileName, OptionsPath, StringComparison.OrdinalIgnoreCase))
+        {
+            ProfileError("Choose a separate file for the export.");
+            return;
+        }
+        try { ProfileStore.Write(dialog.FileName, preferences); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ProfileError("The profile could not be exported."); }
     }
 
     private DockPanel TestingLab()
     {
         var frame = Frame("Testing Lab");
         if (viewerExpanded) { frame.Children.Add(Scene()); return frame; }
-        var readout = signals = Text("", 12, "Muted");
+        var readout = signals = Text("", 13, "Muted");
         readout.FontFamily = new FontFamily("Consolas");
         readout.Margin = new Thickness(0,10,0,0);
-        DockPanel.SetDock(readout,Dock.Bottom);
-        frame.Children.Add(readout);
+        var diagnostic = Surface(Column(Row(ButtonFor("Emergency disable", () =>
+        {
+            enabled = testing = false;
+            Apply();
+        })), readout), 16);
+        DockPanel.SetDock(diagnostic,Dock.Bottom);
+        frame.Children.Add(diagnostic);
         frame.Children.Add(Scene());
         return frame;
     }
@@ -589,12 +812,49 @@ public partial class MainWindow : Window
     private DockPanel Settings()
     {
         var frame = Frame("Settings");
-        frame.Children.Add(Surface(Column(Text("Controller backend", 15),
-            Text("ViGEmBus is required for virtual Xbox output. It is separately installed and retired.", 12, "Muted"),
-            Text("Virtual controllers may be visible system-wide. Local testing needs no driver.", 12, "Muted"),
-            Text("Escape disables mapping when this window has focus.", 12, "Muted"),
-            Text("Rendering tier " + (RenderCapability.Tier >> 16), 12, "Muted"))));
+        var motion = new CheckBox { Content = "Reduce camera animation", Foreground = Brush("Text"), IsChecked = options.ReduceMotion };
+        motion.Click += (_, _) =>
+        {
+            model.ReduceMotion = motion.IsChecked == true;
+            SetInterfaceOptions(options with { ReduceMotion = model.ReduceMotion });
+        };
+        var capture = new CheckBox { Content = "Allow scoped keyboard and mouse capture", Foreground = Brush("Text"), IsChecked = options.Capture };
+        capture.Click += (_, _) =>
+        {
+            if (capture.IsChecked != true) enabled = testing = false;
+            SetInterfaceOptions(options with { Capture = capture.IsChecked == true });
+        };
+        var startup = new ComboBox { ItemsSource = nav.Keys.ToArray(), SelectedItem = options.StartPage, MinWidth = 130 };
+        System.Windows.Automation.AutomationProperties.SetName(startup, "Page to open on launch");
+        startup.SelectionChanged += (_, _) =>
+        {
+            if (startup.SelectedItem is string name) SetInterfaceOptions(options with { StartPage = name });
+        };
+        var body = Surface(Column(Text("Appearance", 16), motion,
+            Text("Startup", 16), Row(Text("Open on launch", 13, "Muted"), startup),
+            Text("Input and safety", 16), capture, Text("Mapping starts off. Escape disables mapping and local testing.", 13, "Muted"),
+            Text("Controller backend", 16), controllerStatus = Text(runtime.Read().Connection, 13, "Muted"),
+            Text("ViGEmBus is required for virtual Xbox output. It is separately installed and retired.", 13, "Muted"),
+            notice = Text(persistenceError ?? "", 13, "Muted")), 18);
+        frame.Children.Add(new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         return frame;
+    }
+
+    private void SetInterfaceOptions(InterfaceOptions value)
+    {
+        options = value;
+        Apply();
+        try
+        {
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(OptionsPath)!);
+            File.WriteAllText(OptionsPath + ".tmp", JsonSerializer.Serialize(value));
+            File.Move(OptionsPath + ".tmp", OptionsPath, true);
+            ProfileError("");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            ProfileError("Interface settings could not be saved.");
+        }
     }
 
     private static string Display(Control control) => control switch

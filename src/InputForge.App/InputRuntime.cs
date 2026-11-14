@@ -9,8 +9,9 @@ using Nefarius.ViGEm.Client.Targets;
 
 namespace InputForge.App;
 
-internal sealed record RuntimeConfig(bool Enabled, bool Test, string Exe, IReadOnlyDictionary<Control, int> Bindings, MouseSettings Mouse);
-internal sealed record RuntimeStatus(ControllerState State, string Connection, string Application, int ReportsPerSecond);
+internal sealed record RuntimeConfig(bool Enabled, bool Test, bool CaptureAllowed, ProfileLibrary Library, Preferences Editing);
+internal sealed record RuntimeStatus(ControllerState State, string Connection, string Application, int ReportsPerSecond,
+    string? Profile = null, string Input = "", int InputEventsPerSecond = 0);
 
 internal sealed class InputRuntime : IDisposable
 {
@@ -29,6 +30,9 @@ internal sealed class InputRuntime : IDisposable
     private string cachedPath = "";
     private long lastTick = Stopwatch.GetTimestamp(), rateStart = Stopwatch.GetTimestamp();
     private int reports, outputRate;
+    private int events, inputRate;
+    private (int Kind, int A, int B) latestInput;
+    private NamedProfile? activeProfile;
     private long nextConnect;
     private string connection = "Disconnected";
     private volatile bool stopping;
@@ -73,9 +77,10 @@ internal sealed class InputRuntime : IDisposable
         }
     }
 
-    private nint Focus(RuntimeConfig options)
+    private nint Focus(RuntimeConfig options, out NamedProfile? profile)
     {
-        if (!options.Test && (!options.Enabled || options.Exe.Length == 0)) return 0;
+        profile = null;
+        if (!options.CaptureAllowed || (!options.Test && !options.Enabled)) return 0;
         nint foreground = GetForegroundWindow();
         if (foreground == 0) return 0;
         GetWindowThreadProcessId(foreground, out uint pid);
@@ -99,14 +104,16 @@ internal sealed class InputRuntime : IDisposable
                 finally { CloseHandle(process); }
             }
         }
-        return string.Equals(cachedPath, options.Exe, StringComparison.OrdinalIgnoreCase) ? foreground : 0;
+        profile = options.Library.ForApplication(cachedPath);
+        return profile is not null ? foreground : 0;
     }
 
     private bool ApplyScope(RuntimeConfig options)
     {
-        nint foreground = Focus(options);
+        nint foreground = Focus(options, out activeProfile);
         if (input.SetScope(foreground, options))
         {
+            latestInput = default;
             if (pad is not null)
             {
                 try { Submit(default); }
@@ -129,9 +136,11 @@ internal sealed class InputRuntime : IDisposable
         uint size = (uint)Marshal.SizeOf<RawPacket>();
         uint bytes = GetRawInputData(lParam, 0x10000003, ref packet, ref size, (uint)Marshal.SizeOf<RawHeader>());
         if (bytes == uint.MaxValue || bytes < 40) return 0;
+        if (packet.Header.Type is 0 or 1) events++;
         if (packet.Header.Type == 1 && packet.Key is > 0 and < 255)
         {
             bool down = (packet.KeyFlags & 1) == 0;
+            if (config.Test) latestInput = (1, packet.Key, down ? 1 : 0);
             if (packet.Key is 0x10 or DefaultBindings.LeftShift or DefaultBindings.RightShift)
             {
                 int side = packet.MakeCode == 0x36 ? DefaultBindings.RightShift : DefaultBindings.LeftShift;
@@ -141,6 +150,7 @@ internal sealed class InputRuntime : IDisposable
         }
         if (packet.Header.Type == 0 && bytes >= 48)
         {
+            if (config.Test) latestInput = packet.MouseButtons == 0 ? (2, packet.X, packet.Y) : (3, packet.MouseButtons, 0);
             if ((packet.MouseFlags & 1) == 0)
             {
                 input.Move(packet.X, packet.Y);
@@ -179,7 +189,8 @@ internal sealed class InputRuntime : IDisposable
             catch { Fault(); }
         }
 
-        var output = input.Update(options.Bindings, options.Mouse, seconds);
+        var settings = activeProfile?.Settings ?? options.Editing;
+        var output = input.Update(settings.Bindings, settings.Mouse, seconds);
         if (pad is not null)
         {
             try
@@ -207,12 +218,23 @@ internal sealed class InputRuntime : IDisposable
         {
             outputRate = (int)(reports / elapsed);
             reports = 0;
+            inputRate = (int)(events / elapsed);
+            events = 0;
             rateStart = now;
         }
         var next = new RuntimeStatus(output, connection,
-            scoped ? options.Test ? "InputForge · Testing Mode" : System.IO.Path.GetFileName(options.Exe) : "Inactive", outputRate);
+            scoped ? options.Test ? "InputForge · Testing Mode" : System.IO.Path.GetFileName(settings.Application) : "Inactive",
+            outputRate, activeProfile?.Name, scoped && options.Test ? InputDescription() : "", scoped ? inputRate : 0);
         if (next != status) Volatile.Write(ref status, next);
     }
+
+    private string InputDescription() => latestInput.Kind switch
+    {
+        1 => $"Key 0x{latestInput.A:X2} {(latestInput.B == 1 ? "down" : "up")}",
+        2 => $"Mouse Δ {latestInput.A}, {latestInput.B}",
+        3 => $"Mouse buttons 0x{latestInput.A:X}",
+        _ => ""
+    };
 
     private void Submit(ControllerState state)
     {
