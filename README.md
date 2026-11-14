@@ -33,3 +33,11 @@ foreground executable or the explicitly enabled local test. The application stor
 There are currently no GitHub release binaries. Test the native layout, hit targets and keyboard
 navigation at different Windows scaling settings before relying on this interface. Driver
 connection, real game output and focus-loss cleanup require a separate manual Windows test.
+
+Successful Windows CI runs include an unsigned `InputForge-Windows-x64-Review` artifact.
+Extract it and run `review/InputForge.App.exe` on Windows x64 with the .NET 10 Desktop Runtime.
+
+## Licence
+
+InputForge source and original model geometry are available under GPL-3.0-or-later.
+The ViGEm managed client and its native library are third-party components distributed under MIT terms.

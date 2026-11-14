@@ -12,3 +12,12 @@ jobs:
           dotnet-version: '10.0.x'
       - run: dotnet build InputForge.slnx --configuration Release
       - run: dotnet test InputForge.slnx --configuration Release --no-build
+      - name: Package Windows x64 review build
+        run: dotnet publish src/InputForge.App/InputForge.App.csproj --configuration Release --runtime win-x64 --self-contained false --output review
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: InputForge-Windows-x64-Review
+          path: |
+            review/
+            LICENSE
+          if-no-files-found: error

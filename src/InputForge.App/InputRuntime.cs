@@ -26,6 +26,7 @@ internal sealed class InputRuntime : IDisposable
     private IXbox360Controller? pad;
     private HwndSource? source;
     private nint activeWindow;
+    private nint cachedWindow;
     private uint cachedPid;
     private string cachedPath = "";
     private Vector2 delta;
@@ -92,9 +93,10 @@ internal sealed class InputRuntime : IDisposable
         if (pid == 0) return 0;
         if (options.Test) return pid == (uint)ownProcess ? foreground : 0;
         if (pid == (uint)ownProcess) return 0;
-        if (pid != cachedPid || foreground != activeWindow)
+        if (pid != cachedPid || foreground != cachedWindow)
         {
             cachedPid = pid;
+            cachedWindow = foreground;
             cachedPath = "";
             nint process = OpenProcess(0x1000, false, pid);
             if (process != 0)

@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private TextBlock? applicationStatus, signals, binding, selection, notice;
     private Button? rebind;
     private ComboBox? controlPicker;
+    private ComboBox? groupPicker;
     private string page = "Dashboard";
     private string mouseTab = "Sensitivity";
     private RuntimeStatus? last;
@@ -145,6 +146,7 @@ public partial class MainWindow : Window
         page = name;
         applicationStatus = signals = binding = selection = notice = null;
         controlPicker = null;
+        groupPicker = null;
         rebind = null;
         foreach (var (key, item) in nav)
         {
@@ -224,8 +226,14 @@ public partial class MainWindow : Window
         selection = Text("", 15);
         rebind = ButtonFor("Rebind", BeginRebind);
         var reset = ButtonFor("Reset", () => SetBinding(DefaultBindings.Create()[selected]));
-        controlPicker = Combo("Controller control", Enum.GetValues<Control>(), selected, SelectControl);
-        var controls = Column(Text("Bindings", 11, "Muted"), controlPicker, selection, binding,
+        groupPicker = Combo("Binding group", Enum.GetValues<BindingGroup>(), GroupFor(selected), group =>
+        {
+            var choices = ControlsIn(group);
+            controlPicker!.ItemsSource = choices;
+            SelectControl(choices.Contains(selected) ? selected : choices[0]);
+        });
+        controlPicker = Combo("Controller control", ControlsIn(GroupFor(selected)), selected, SelectControl);
+        var controls = Column(Text("Bindings", 11, "Muted"), groupPicker, controlPicker, selection, binding,
             Row(rebind, reset),
             Row(ButtonFor("Left mouse", () => BindMouse(256)), ButtonFor("Right mouse", () => BindMouse(257))),
             Row(ButtonFor("Middle", () => BindMouse(258)), ButtonFor("Mouse 4", () => BindMouse(259)), ButtonFor("Mouse 5", () => BindMouse(260))),
@@ -243,12 +251,26 @@ public partial class MainWindow : Window
     {
         if (id != selected) CancelRebind();
         selected = id;
+        if (groupPicker is not null && !Equals(groupPicker.SelectedItem, GroupFor(id)))
+            groupPicker.SelectedItem = GroupFor(id);
         if (controlPicker is not null && !Equals(controlPicker.SelectedItem, id))
             controlPicker.SelectedItem = id;
         if (selection is not null) selection.Text = Display(id);
         if (binding is not null) binding.Text = DisplayInput(preferences.Bindings[id]);
         model.ShowState(runtime.Read().State, selected);
     }
+
+    private enum BindingGroup { Face, Shoulders, Directional, Sticks }
+
+    private static BindingGroup GroupFor(Control id) => id switch
+    {
+        Control.A or Control.B or Control.X or Control.Y or Control.View or Control.Menu => BindingGroup.Face,
+        Control.LeftBumper or Control.RightBumper or Control.LeftTrigger or Control.RightTrigger => BindingGroup.Shoulders,
+        Control.Up or Control.Down or Control.Left or Control.Right => BindingGroup.Directional,
+        _ => BindingGroup.Sticks
+    };
+
+    private static Control[] ControlsIn(BindingGroup group) => Enum.GetValues<Control>().Where(id => GroupFor(id) == group).ToArray();
 
     private void BeginRebind()
     {
