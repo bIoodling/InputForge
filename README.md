@@ -17,15 +17,14 @@ dotnet test InputForge.slnx -c Release --no-build
 
 ## Try the Windows interface
 
-- On Dashboard or Controller, drag the model to orbit, use the wheel to zoom, or select a binding
-  from the model or the independently scrolling list. Drag the divider to resize the inspector.
+- On Controller, drag the model to orbit, use the wheel to zoom, or click a control to edit its binding.
+  Use **Choose control** for keyboard access and individual stick directions. The divider resizes the inspector.
   Double-click the background to reset the view.
-- Select **Test inputs** to visualise real mappings without a virtual device. Click or move inside
-  the viewport to preview mouse mappings. Stop Testing Mode to resume mouse orbit and selection.
+- In Testing Lab, select **Test inputs** to observe live mappings without a virtual device.
+  Click or move inside the viewport to preview mouse mappings. Stop testing to resume mouse orbit and selection.
   New profiles and individual resets use Left Shift for B, Space for A, right mouse for LT, and
   left mouse for RT. Existing saved assignments are retained.
 - On Mouse, use the Sensitivity, Filtering and Response Curve tabs.
-- In Testing Lab, choose **Test inputs** to use real keyboard and mouse input without creating a virtual device.
 - For virtual Xbox 360 output, separately install [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0).
   Select the allowed executable under Profiles, enable mapping, and focus that executable.
   ViGEmBus is a retired driver. InputForge neither distributes nor installs it.
