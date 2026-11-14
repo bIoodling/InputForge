@@ -77,6 +77,29 @@ internal static class ControllerShell
         return new GeometryModel3D(mesh, material);
     }
 
+    internal static GeometryModel3D GripTexture(Material material)
+    {
+        var mesh = new MeshGeometry3D();
+        for (int side = -1; side <= 1; side += 2)
+        for (int row = 0; row < 15; row++)
+        for (int column = 0; column < 8; column++)
+        {
+            double y = -.10 - row * .058;
+            double x = side * (1.12 + row * .008 + column * .038 + (row % 2) * .019);
+            double z = -.482 - Math.Max(0, -y / .84 - .48) * .20;
+            const double d = .009;
+            int first = mesh.Positions.Count;
+            mesh.Positions.Add(new(x-d,y,z));
+            mesh.Positions.Add(new(x,y+d,z));
+            mesh.Positions.Add(new(x+d,y,z));
+            mesh.Positions.Add(new(x,y-d,z));
+            Triangle(mesh, first, first+1, first+2);
+            Triangle(mesh, first, first+2, first+3);
+        }
+        mesh.Freeze();
+        return new GeometryModel3D(mesh, material);
+    }
+
     private static void Triangle(MeshGeometry3D mesh, int a, int b, int c)
     {
         mesh.TriangleIndices.Add(a);

@@ -442,11 +442,6 @@ public partial class MainWindow : Window
     private DockPanel TestingLab()
     {
         var frame = Frame("Testing Lab");
-        var panel = Row(ButtonFor(testing ? "Stop local test" : "Start local test", () =>
-            { testing = !testing; Navigate(page); }), Text(testing ? "Local test · real captured input · driver output disabled" : "Local test is off", 12, "Muted"));
-        panel.Margin = new Thickness(0,0,0,10);
-        DockPanel.SetDock(panel,Dock.Top);
-        frame.Children.Add(panel);
         var readout = signals = Text("", 12, "Muted");
         readout.FontFamily = new FontFamily("Consolas");
         readout.Margin = new Thickness(0,10,0,0);

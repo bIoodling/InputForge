@@ -57,6 +57,7 @@ internal sealed class ControllerViewport : Grid
     {
         models.Children.Add(ControllerShell.Loft([(.84, -.48), (.93, -.42), (1, -.24), (1, -.045)], grip));
         models.Children.Add(ControllerShell.Cap(.84, -.48, false, grip));
+        models.Children.Add(ControllerShell.GripTexture(Matte(38, 38, 40)));
         models.Children.Add(ControllerShell.Loft([(1, -.045), (1, -.006)], Matte(19, 19, 20)));
         models.Children.Add(ControllerShell.Loft([(1, -.006), (1, .15), (.98, .25), (.94, .34), (.89, .39)], shell));
         models.Children.Add(ControllerShell.Cap(.89, .39, true, shell));
