@@ -37,7 +37,7 @@ foreground executable or the explicitly enabled local test. The application stor
 `%LOCALAPPDATA%\InputForge` and makes no network requests during normal use.
 
 The asset is © Rusfort under CC BY 4.0. See [asset attribution and rendering notes](src/InputForge.App/Assets/ATTRIBUTION.md).
-The build reassembles the original binary from ordered segments and checks its SHA-256. The model
+The loader reassembles the unchanged binary from ordered segments and checks its SHA-256. The model
 has no authored animation tracks. Live transforms use its existing geometry. Guide and rear controls
 are not exposed as independent bindings by the Xbox 360 backend.
 

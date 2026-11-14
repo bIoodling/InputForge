@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Media;
@@ -13,14 +14,38 @@ internal sealed record ElitePart(MeshGeometry3D Mesh, Material Material, Control
 internal sealed record EliteModel(IReadOnlyList<ElitePart> Parts)
 {
     private const int MaxFileBytes = 32 * 1024 * 1024;
-    internal static string PathOnDisk => Path.Combine(AppContext.BaseDirectory, "Assets", "xbox_elite_controller.glb");
-    internal static readonly Lazy<Task<EliteModel>> Cached = new(() => Task.Run(() => Load(PathOnDisk)));
-
-    internal static EliteModel Load(string path)
+    internal static readonly Lazy<Task<EliteModel>> Cached = new(() => Task.Run(() =>
     {
-        using var stream = File.OpenRead(path);
+        using var stream = OpenAsset();
+        return Load(stream);
+    }));
+
+    internal static MemoryStream OpenAsset()
+    {
+        const int length = 15218700;
+        var stream = new MemoryStream(length);
+        try
+        {
+            for (int i = 0; i < 31; i++)
+            {
+                using var segment = File.OpenRead(Path.Combine(AppContext.BaseDirectory, "Assets", "glb", $"{i:D2}.bin"));
+                if (segment.Length != Math.Min(500000, length - i * 500000))
+                    throw new InvalidDataException("Unexpected GLB segment length.");
+                segment.CopyTo(stream);
+            }
+            if (Convert.ToHexString(SHA256.HashData(stream.GetBuffer().AsSpan(0, length))) !=
+                "3C4E1DF10DA187716DDD8B787F5B6E1DD8298FD61E76010DB6EC857A9F1B0863")
+                throw new InvalidDataException("Controller asset checksum mismatch.");
+            stream.Position = 0;
+            return stream;
+        }
+        catch { stream.Dispose(); throw; }
+    }
+
+    internal static EliteModel Load(Stream stream)
+    {
         if (stream.Length > MaxFileBytes || stream.Length < 28) throw new InvalidDataException("Unexpected GLB length.");
-        using var reader = new BinaryReader(stream);
+        using var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
         if (reader.ReadUInt32() != 0x46546C67 || reader.ReadInt32() != 2 || reader.ReadInt32() != stream.Length)
             throw new InvalidDataException("Expected a glTF 2 GLB.");
         byte[] ReadChunk(uint type)

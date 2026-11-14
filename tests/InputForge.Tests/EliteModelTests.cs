@@ -1,4 +1,3 @@
-using System.IO;
 using System.Security.Cryptography;
 using System.Windows;
 using System.Windows.Controls;
@@ -30,7 +29,7 @@ public class EliteModelTests
             Control.LeftTrigger, Control.RightTrigger, Control.LeftBumper, Control.RightBumper,
             Control.View, Control.Menu, Control.Up, Control.Down, Control.Left, Control.Right },
             control => Assert.Contains((Control?)control, controls));
-        using var stream = File.OpenRead(EliteModel.PathOnDisk);
+        using var stream = EliteModel.OpenAsset();
         Assert.Equal("3C4E1DF10DA187716DDD8B787F5B6E1DD8298FD61E76010DB6EC857A9F1B0863",
             Convert.ToHexString(SHA256.HashData(stream)));
     }

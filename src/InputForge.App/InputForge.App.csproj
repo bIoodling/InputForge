@@ -8,11 +8,8 @@
   <ItemGroup>
     <InternalsVisibleTo Include="InputForge.Tests" />
     <Content Include="Assets/ATTRIBUTION.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="Assets/xbox_elite_controller.glb" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets/glb/*.bin" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <ProjectReference Include="../InputForge.Core/InputForge.Core.csproj" />
     <PackageReference Include="Nefarius.ViGEm.Client" Version="1.21.256" />
   </ItemGroup>
-  <Target Name="AssembleControllerAsset" BeforeTargets="PrepareForBuild" Condition="!Exists('Assets/xbox_elite_controller.glb')">
-    <Exec Command="powershell -NoProfile -NonInteractive -File &quot;$(MSBuildProjectDirectory)/Assets/Assemble.ps1&quot;" />
-  </Target>
 </Project>
