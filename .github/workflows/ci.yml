@@ -1,0 +1,40 @@
+name: Windows CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build InputForge.slnx --configuration Release
+      - name: Run isolated beta checks
+        env:
+          INPUTFORGE_DRIVER_TEST: '0'
+        run: dotnet test InputForge.slnx --configuration Release --no-build --logger "trx;LogFileName=beta-debug.trx" --logger "console;verbosity=detailed" --results-directory TestResults
+      - name: Package Windows x64 review build
+        run: dotnet publish src/InputForge.App/InputForge.App.csproj --configuration Release --runtime win-x64 --self-contained false --output review
+      - name: Check the packaged mapping engine
+        shell: pwsh
+        run: ./scripts/Test-BetaPackage.ps1 -PackageDirectory review | Tee-Object -FilePath TestResults/package-smoke.md
+      - name: Generate debugging handoff
+        if: always()
+        shell: pwsh
+        run: ./scripts/New-DebugReport.ps1 -ResultsDirectory TestResults -Output TestResults/debug-report.md -Commit $env:GITHUB_SHA
+      - name: Upload debugging handoff
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: InputForge-Debug-Report
+          path: TestResults/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: InputForge-Windows-x64-Review
+          path: |
+            review/
+            LICENSE
+          if-no-files-found: error

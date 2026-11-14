@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/InputForge.Core/InputForge.Core.csproj" />
+  <Project Path="src/InputForge.App/InputForge.App.csproj" />
+  <Project Path="tests/InputForge.Tests/InputForge.Tests.csproj" />
+</Solution>

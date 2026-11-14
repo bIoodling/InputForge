@@ -1,0 +1,7 @@
+**/bin/
+**/obj/
+.vs/
+work/
+outputs/
+TestResults/
+src/InputForge.App/Assets/xbox_elite_controller.glb
